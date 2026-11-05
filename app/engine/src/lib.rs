@@ -21,3 +21,8 @@ pub mod summarize;
 pub mod terms;
 pub mod transcript;
 pub mod update;
+
+pub mod workbench;
+pub mod mlx;
+pub mod inbox;
+pub mod codex;

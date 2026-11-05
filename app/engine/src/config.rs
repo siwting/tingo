@@ -160,6 +160,7 @@ pub fn with_legacy(new: PathBuf, old: PathBuf) -> PathBuf {
 pub fn normalize_api(v: Option<&str>) -> String {
     match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         Some("anthropic") => "anthropic".into(),
+        Some("codex") => "codex".into(),
         _ => "openai".into(),
     }
 }

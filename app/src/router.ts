@@ -1,3 +1,5 @@
+import { renderReader } from "./views/reader";
+import { renderWorkbench } from "./views/workbench";
 import { $$, main } from "./dom";
 import { S } from "./state";
 import { renderDetail, stopAudio } from "./views/detail";
@@ -10,12 +12,20 @@ export function route(): void {
   const h = decodeURIComponent(location.hash.slice(1) || "/");
   stopAudio();
   S.detail = null;
+  if (S.env?.read_only) {
+    const [id,query]=h.startsWith("/m/")?h.slice(3).split("?"): [undefined,undefined];
+    renderReader(id,Number(new URLSearchParams(query??"").get("t"))||0);
+    return;
+  }
   let nav = "home";
   if (h.startsWith("/m/")) {
     nav = "meetings";
     const [id, query] = h.slice(3).split("?");
     const at = Number(new URLSearchParams(query ?? "").get("t"));
     renderDetail(id, false, Number.isFinite(at) && query ? at : undefined);
+  } else if (h === "/workbench") {
+    nav = "workbench";
+    renderWorkbench();
   } else if (h === "/meetings") {
     nav = "meetings";
     renderMeetings();

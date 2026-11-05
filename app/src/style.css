@@ -731,3 +731,17 @@ a.tag-chip.sm:hover { color: var(--blue); }
 .history-export summary::-webkit-details-marker { display: none; }
 .history-export .menu { top: auto; bottom: calc(100% + 8px); max-height: min(420px, 65dvh); overflow-y: auto; }
 .modal-foot:has(.history-export) #historyMessage { flex-basis: 100%; }
+
+/* Meeting workbench shares desktop and browser controls. */
+.workbench { max-width: 1060px; }
+.workbench h2 { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border, #ddd); }
+.workbench textarea { display:block; width:100%; margin:12px 0; padding:12px; border:1px solid var(--border, #ddd); border-radius:8px; font:inherit; }
+.workbench select, .workbench input:not([type=checkbox]) { max-width:100%; padding:9px; margin:6px 8px 6px 0; border:1px solid var(--border, #ddd); border-radius:6px; font:inherit; }
+.workbench select { min-width:240px; }
+.workbench .btn { margin:6px 8px 6px 0; }
+.workbench #answer, .workbench #insightText { line-height:1.8; }
+.reader-card { padding: 18px 0; border-bottom: 1px solid var(--border,#ddd); }
+.reader-card h2 { margin: 0 0 8px; }
+.reader audio { display:block; width:100%; margin:20px 0; }
+.reader { max-width: 1000px; }
+@media(max-width:700px) { .reader-mode .app { grid-template-columns: minmax(0,1fr); } .reader-mode .sidebar { display:none; } .reader-mode #main { margin:0; } .reader-mode .page { padding:20px; } }

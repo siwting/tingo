@@ -418,6 +418,11 @@ pub fn chat(
     mut on_token: impl FnMut(&str),
     mut on_think: impl FnMut(usize),
 ) -> Result<String, String> {
+    if cfg.api == "codex" {
+        let text=crate::codex::chat(system,prompt,&cfg.model)?;
+        on_token(&text);
+        return Ok(text);
+    }
     if cfg.api == "anthropic" {
         return chat_anthropic(cfg, system, prompt, on_token, on_think);
     }

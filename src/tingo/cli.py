@@ -31,6 +31,15 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+@app.command("import-workbench")
+def import_workbench_command(database: Path, destination: Path):
+    """导入听记数据库（不修改源库，不复制录音，重复导入跳过）。"""
+    from .workbench_import import import_workbench
+    result = import_workbench(database, destination)
+    typer.echo(f"导入 {len(result['imported'])} 场，跳过 {len(result['skipped'])} 场")
+
+
 console = Console()
 err = Console(stderr=True)
 log = get_logger()
@@ -397,7 +406,7 @@ def ui(
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(create_app(read_only=browser), host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     while not server.started:
@@ -445,7 +454,7 @@ def serve(
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(create_app(read_only=browser), host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     while not server.started:

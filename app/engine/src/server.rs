@@ -31,6 +31,12 @@ use crate::summarize::{self, Hooks};
 use crate::transcript::{fmt_ts, Transcript};
 use crate::{audio, autostop, models, push, speakers, terms, update};
 
+
+#[path = "server_workbench.rs"]
+mod workbench_api;
+use workbench_api::*;
+pub use workbench_api::reader_router;
+
 pub struct Options {
     pub root: PathBuf,
     pub config_path: PathBuf,
@@ -42,7 +48,8 @@ pub struct Options {
     pub sample_dir: PathBuf,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Job {
     /// 任务编号：录音和后台任务（转写、生成纪要、下载模型）可以同时进行，界面按编号区分
     pub id: String,
@@ -66,7 +73,7 @@ impl Job {
     fn new(kind: &str, meeting: &str, state: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
-            id: format!("j{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            id: format!("j{}-{}", (now()*1000000.) as u64, NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
             kind: kind.into(),
             meeting: meeting.into(),
             state: state.into(),
@@ -96,6 +103,7 @@ pub struct AppState {
     /// 当前加载的识别引擎；切换模型（或 Fun-ASR-Nano 的热词变了）时换掉
     engine: Mutex<Option<Arc<Engine>>>,
     engine_lock: Mutex<()>,
+    workbench_lock: Mutex<()>,
     /// 进行中和刚结束（还没被界面收起）的任务
     jobs: Mutex<Vec<Job>>,
     recording: Mutex<Option<Live>>,
@@ -141,19 +149,28 @@ fn not_found() -> ApiError {
 }
 
 impl AppState {
-    pub fn new(opt: Options) -> Shared {
-        Arc::new(Self {
+    pub fn new(opt: Options) -> Shared { Self::with_inbox(opt,true) }
+    pub fn reader(opt: Options) -> Shared { Self::with_inbox(opt,false) }
+    fn with_inbox(opt: Options, enable_inbox:bool) -> Shared {
+        let mut saved:Vec<Job>=crate::workbench::read(&opt.root.join("jobs.json")).ok().and_then(|v|serde_json::from_value(v).ok()).unwrap_or_default();
+        for job in &mut saved {if job.busy(){job.state="error".into();job.error="上次处理被中断，原文已保留，可重试".into();job.finished_at=now();}}
+        let state = Arc::new(Self {
             opt,
             engine: Mutex::new(None),
             engine_lock: Mutex::new(()),
-            jobs: Mutex::new(Vec::new()),
+            workbench_lock: Mutex::new(()),
+            jobs: Mutex::new(saved),
             recording: Mutex::new(None),
             update: Mutex::new(None),
-        })
+        });
+        if enable_inbox {start_inbox(&state);}
+        state
     }
 
-    fn config(&self) -> Config {
-        config::load(&self.opt.config_path)
+    fn config(&self) -> Config { config::load(&self.opt.config_path) }
+    fn processing_config(&self) -> Config {
+        let mut cfg=self.config();cfg.hotwords.extend(crate::workbench::hotwords(&self.opt.root));
+        cfg.hotwords.sort();cfg.hotwords.dedup();cfg
     }
 
     fn model_paths(&self) -> ModelPaths {
@@ -164,9 +181,9 @@ impl AppState {
     fn engine(&self) -> Result<Arc<Engine>, String> {
         let paths = self.model_paths();
         let kind = paths.active();
-        let cfg = self.config();
+        let cfg = self.processing_config();
         // Fun-ASR-Nano 在加载时就要拿到热词；SenseVoice、Fun-ASR-Nano 加载时定下会议语言
-        let hot = if kind == AsrKind::FunAsrNano { cfg.hotwords } else { Vec::new() };
+        let hot = if matches!(kind, AsrKind::FunAsrNano | AsrKind::QwenMlx) { cfg.hotwords } else { Vec::new() };
         let lang = if kind.uses_language() { cfg.asr_language } else { String::new() };
         let current = || {
             self.engine
@@ -424,12 +441,16 @@ impl AppState {
             jobs.retain(|j| !drop.contains(&j.id));
         }
         jobs.push(job);
+        std::fs::create_dir_all(&self.opt.root).map_err(|e|server_error(e.to_string()))?;
+        if let Err(e)=crate::workbench::write(&self.opt.root.join("jobs.json"),&json!(*jobs)){jobs.pop();return Err(server_error(e));}
         Ok(())
     }
 
     fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
-        if let Some(j) = self.jobs.lock().unwrap().iter_mut().find(|j| j.id == id) {
-            f(j);
+        let mut jobs=self.jobs.lock().unwrap();
+        if let Some(j)=jobs.iter_mut().find(|j|j.id==id){
+            let before=j.state.clone();f(j);
+            if j.state!=before {if let Err(e)=crate::workbench::write(&self.opt.root.join("jobs.json"),&json!(*jobs)){eprintln!("Cannot persist task state: {e}");}}
         }
     }
 
@@ -445,7 +466,7 @@ impl AppState {
 
     /// 生成纪要：流式写进 job.minutes，写完存到会议文件夹。`extra` 是这场会议额外填的热词。
     fn run_summarize(&self, id: &str, tr: &Transcript, dir: &Path, extra: &[String]) -> Result<(), String> {
-        let cfg = self.config();
+        let cfg = self.processing_config();
         let mut hotwords = cfg.hotwords.clone();
         hotwords.extend(
             extra
@@ -474,7 +495,9 @@ impl AppState {
             },
         )?;
         crate::minutes_history::save(dir, &text).map_err(|e| e.to_string())?;
-        self.update(id, |j| j.minutes = text);
+        self.update(id, |j| {j.minutes = text;j.stage="整理待办与洞察".into();});
+        enrich_after_summary(self,dir,&cfg);
+        self.update(id,|j|j.stage.clear());
         if cfg.obsidian.auto && !cfg.obsidian.vault.trim().is_empty() {
             // 自动存进 Obsidian；失败不影响纪要本身，只提示一下
             // 界面认"没能" / "Couldn't"开头的提示为出错
@@ -496,6 +519,10 @@ impl AppState {
 
     /// 处理录音文件：解码 → 分段转写 → 存转写 → 生成纪要。
     fn run_process(&self, id: &str, audio_path: &Path, dir: &Path, extra: &[String]) -> Result<(), String> {
+        if dir.join(TRANSCRIPT_JSON).exists(){
+            let tr=Transcript::load(&dir.join(TRANSCRIPT_JSON)).map_err(|e|e.to_string())?;
+            return self.run_summarize(id,&tr,dir,extra);
+        }
         self.update(id, |j| j.state = "loading".into());
         let engine = self.engine()?;
         self.update(id, |j| j.state = "transcribing".into());
@@ -529,12 +556,13 @@ fn spawn_job(state: &Shared, id: &str, work: impl FnOnce(&AppState, &str) -> Res
 async fn env(State(s): State<Shared>) -> Json<Value> {
     let cfg = s.config();
     let s2 = s.clone();
-    let llm_ready = !cfg.llm.api_key.is_empty()
+    let llm_ready = (cfg.llm.api == "codex" && crate::codex::binary().is_file()) || !cfg.llm.api_key.is_empty()
         || tokio::task::spawn_blocking(move || summarize::is_ollama(&s2.config().llm))
             .await
             .unwrap_or(false);
     Json(json!({
         "version": s.opt.version,
+        "workbench": true,
         "root": s.opt.root,
         "ffmpeg": true, // 桌面版不需要 ffmpeg
         "system_audio": system_audio_supported(&s.opt.recorder_bin),
@@ -659,7 +687,7 @@ async fn put_config(State(s): State<Shared>, Json(r): Json<ConfigReq>) -> ApiRes
     c.llm.base_url = r.base_url.trim().into();
     c.llm.model = r.model.trim().into();
     if let Some(a) = &r.api {
-        if !matches!(a.trim().to_ascii_lowercase().as_str(), "openai" | "anthropic") {
+        if !matches!(a.trim().to_ascii_lowercase().as_str(), "openai" | "anthropic" | "codex") {
             return Err(bad(tr(&format!("不认识的接口协议：{a}"), &format!("Unknown API protocol: {a}"))));
         }
         c.llm.api = config::normalize_api(Some(a));
@@ -762,6 +790,7 @@ fn list_models(base_url: &str, key: &str, api: &str) -> Option<Vec<String>> {
 
 async fn test_llm(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value> {
     let api = r.api(&s);
+    if api == "codex" { return Json(json!({"ok":crate::codex::binary().is_file(),"models":[],"message":"Codex CLI：使用已有登录；模型可留空使用 CLI 默认值。完整调用在生成时验证。"})); }
     let key = r.api_key.unwrap_or_else(|| s.config().llm.api_key);
     let (url, model) = (r.base_url, r.model);
     let ids = tokio::task::spawn_blocking(move || list_models(&url, &key, &api))
@@ -790,6 +819,7 @@ async fn test_llm(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value>
 
 async fn llm_models(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value> {
     let api = r.api(&s);
+    if api == "codex" { return Json(json!({"ok":crate::codex::binary().is_file(),"models":[],"message":"Codex CLI：使用已有登录；模型可留空使用 CLI 默认值。完整调用在生成时验证。"})); }
     let key = r.api_key.unwrap_or_else(|| s.config().llm.api_key);
     let url = r.base_url;
     let ids = tokio::task::spawn_blocking(move || list_models(&url, &key, &api))
@@ -1723,13 +1753,15 @@ fn job_json(s: &AppState, job: &Job) -> Value {
 
 /// 收起所有已结束的任务
 async fn dismiss(State(s): State<Shared>) -> Json<Value> {
-    s.jobs.lock().unwrap().retain(Job::busy);
+    let mut jobs=s.jobs.lock().unwrap();jobs.retain(Job::busy);
+    let _=crate::workbench::write(&s.opt.root.join("jobs.json"),&json!(*jobs));
     Json(json!({"ok": true}))
 }
 
 /// 收起一个已结束的任务
 async fn dismiss_one(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> Json<Value> {
-    s.jobs.lock().unwrap().retain(|j| j.busy() || j.id != id);
+    let mut jobs=s.jobs.lock().unwrap();jobs.retain(|j| j.busy() || j.id != id);
+    let _=crate::workbench::write(&s.opt.root.join("jobs.json"),&json!(*jobs));
     Json(json!({"ok": true}))
 }
 
@@ -1960,6 +1992,15 @@ pub fn router(state: Shared) -> Router {
             axum::http::HeaderName::from_static(i18n::HEADER),
         ]);
     Router::new()
+        .route("/api/workbench/inbox", get(inbox_get).put(inbox_put))
+        .route("/api/glossary", get(glossary_get).put(glossary_put))
+        .route("/api/workbench/ask", get(questions_get).post(workbench_ask))
+        .route("/api/meetings/{id}/insights", post(workbench_insights))
+        .route("/api/meetings/{id}/workbench", get(workbench_get).put(workbench_put))
+        .route("/api/meetings/{id}/correct", post(correct_transcript))
+        .route("/api/meetings/{id}/original", get(original_get))
+        .route("/api/meetings/{id}/tasks/extract", post(tasks_extract))
+        .route("/api/meetings/{id}/classify", post(classify_meeting))
         .route("/api/env", get(env))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/test", post(test_llm))

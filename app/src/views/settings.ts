@@ -17,7 +17,7 @@ interface Preset {
   base_url?: string;
   model?: string;
   /** 接口协议，默认 openai */
-  api?: "openai" | "anthropic";
+  api?: "openai" | "anthropic" | "codex";
   local?: LocalProvider;
 }
 
@@ -26,6 +26,7 @@ const remotePresets = (): Preset[] => [
   { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-chat" },
   { id: "bailian", name: t("通义千问（百炼）", "Qwen (Bailian)"), base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+  { id: "codex", name: "Codex CLI", base_url: "", model: "", api: "codex" },
   { id: "claude", name: "Claude", base_url: "https://api.anthropic.com/v1", model: "claude-sonnet-5", api: "anthropic" },
   { id: "gemini", name: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash" },
   { id: "custom", name: t("自定义", "Custom") },
@@ -616,9 +617,10 @@ function panelLlm(x: Ctx): void {
     <div class="s-grid">
       <div class="prov-grid" id="sPreset">${presets.map((p) => `<button data-id="${p.id}" title="${esc(p.name)}">${dot(p)}<span>${esc(p.name)}</span></button>`).join("")}</div>
       <div class="field"><label>${t("接口协议", "API protocol")}</label>
-        ${segChoice("sApi", c.api === "anthropic" ? "anthropic" : "openai", [
+        ${segChoice("sApi", c.api === "codex" ? "codex" : c.api === "anthropic" ? "anthropic" : "openai", [
           ["openai", "OpenAI 兼容", "OpenAI-compatible"],
           ["anthropic", "Anthropic（Claude）", "Anthropic (Claude)"],
+          ["codex", "Codex CLI（使用现有登录）", "Codex CLI (existing login)"],
         ])}</div>
       <div class="s-row2">
         <div class="field"><label>${t("接口地址 Base URL", "Base URL")}</label><input class="input" id="sBase" value="${esc(c.base_url)}"></div>

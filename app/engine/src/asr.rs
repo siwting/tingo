@@ -25,10 +25,11 @@ pub enum AsrKind {
     SenseVoice,
     FunAsrNano,
     AppleSpeech,
+    QwenMlx,
 }
 
 impl AsrKind {
-    pub const ALL: [AsrKind; 4] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech];
+    pub const ALL: [AsrKind; 5] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech, AsrKind::QwenMlx];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -36,6 +37,7 @@ impl AsrKind {
             AsrKind::SenseVoice => "sensevoice",
             AsrKind::FunAsrNano => "funasr-nano",
             AsrKind::AppleSpeech => "apple-speech",
+            AsrKind::QwenMlx => "qwen-mlx",
         }
     }
 
@@ -85,12 +87,13 @@ impl ModelPaths {
             AsrKind::SenseVoice => "sensevoice",
             AsrKind::FunAsrNano => "funasr-nano",
             AsrKind::AppleSpeech => "apple-speech",
+            AsrKind::QwenMlx => "qwen-mlx",
         })
     }
     pub fn asr_files(&self, kind: AsrKind) -> Vec<PathBuf> {
         let d = self.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech => vec![],
+            AsrKind::AppleSpeech | AsrKind::QwenMlx => vec![],
             AsrKind::Paraformer => vec![self.paraformer(), self.tokens()],
             AsrKind::SenseVoice => vec![d.join("model.int8.onnx"), d.join("tokens.txt")],
             AsrKind::FunAsrNano => vec![
@@ -108,6 +111,7 @@ impl ModelPaths {
         self.base().iter().all(|p| p.is_file())
     }
     pub fn asr_ready(&self, kind: AsrKind) -> bool {
+        if kind == AsrKind::QwenMlx { return crate::mlx::ready(); }
         self.asr_files(kind).iter().all(|p| p.is_file())
     }
     /// 默认的一套（基础模型 + Paraformer）是否齐全：首次启动下载的就是这一套
@@ -192,11 +196,11 @@ impl Engine {
         }
         let mut cfg = OfflineRecognizerConfig::default();
         cfg.model_config.num_threads = threads;
-        let rec = if kind == AsrKind::AppleSpeech { None } else {
+        let rec = if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx) { None } else {
         let [first, second, ..] = &models.asr_files(kind)[..] else { unreachable!() };
         let dir = models.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech => unreachable!(),
+            AsrKind::AppleSpeech | AsrKind::QwenMlx => unreachable!(),
             AsrKind::Paraformer => {
                 cfg.model_config.paraformer.model = path_str(first);
                 cfg.model_config.tokens = path_str(second);
@@ -282,6 +286,19 @@ impl Engine {
 
     pub fn transcribe(&self, samples: &[f32], offset_ms: u64) -> Result<Vec<Segment>, String> {
         let _guard = self.lock.lock().unwrap();
+        if self.kind == AsrKind::QwenMlx {
+            let vad=VoiceActivityDetector::create(&self.vad,120.0).ok_or("Voice activity detector failed to load")?;
+            for chunk in samples.chunks(512){vad.accept_waveform(chunk);}
+            vad.flush();let mut ranges=Vec::new();
+            while let Some(segment)=vad.front(){let start=segment.start() as f64/SR as f64;let end=start+segment.samples().len() as f64/SR as f64;ranges.push((start,end));vad.pop();}
+            if ranges.is_empty(){return Ok(Vec::new());}
+            let spans=crate::mlx::transcribe(samples,&self.hotwords,&ranges)?;
+            return Ok(spans.into_iter().filter(|s|!s.text.trim().is_empty()).map(|s| {
+                let a=((s.start*SR as f64) as usize).min(samples.len());
+                let b=((s.end*SR as f64) as usize).min(samples.len());
+                Segment{start_ms:offset_ms+(s.start*1000.) as u64,end_ms:offset_ms+(s.end*1000.) as u64,text:s.text,embeddings:windows(b-a).filter_map(|(x,y)|self.embed(&samples[a+x..a+y])).collect()}
+            }).collect());
+        }
         if self.kind == AsrKind::AppleSpeech {
             let bin = self.apple_bin.as_ref().ok_or("Apple speech helper is not configured")?;
             let spans = crate::apple_speech::transcribe(bin, &self.language, samples)?;

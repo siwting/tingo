@@ -337,9 +337,18 @@ def _request_api(req: LLMTestRequest) -> str:
     return saved.api if req.base_url.rstrip("/") == saved.base_url.rstrip("/") else "openai"
 
 
-def create_app(root: Path | None = None) -> FastAPI:
+def create_app(root: Path | None = None, *, read_only: bool = False) -> FastAPI:
     root = (root or Path(config.env_var("ROOT") or meetings.DEFAULT_ROOT)).expanduser()
     app = FastAPI(title="tingo", docs_url=None, redoc_url=None)
+    @app.middleware("http")
+    async def reader_boundary(request, call_next):
+        if read_only and request.url.path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            allowed = request.url.path in {"/api/env", "/api/meetings", "/api/search"} or re.fullmatch(r"/api/meetings/[^/]+(?:/(?:audio|workbench|original))?", request.url.path)
+            if request.method not in {"GET", "HEAD"} or not allowed:
+                return JSONResponse({"detail": "Web 仅供查看会议记录"}, status_code=403)
+        return await call_next(request)
+
     lock = threading.Lock()  # 保护 jobs 列表和录音状态
     jobs: list[Job] = []  # 进行中和刚结束（还没被界面收起）的任务，按开始先后
     # 正在进行的那一场录音；auto 是自动结束的判断（record.AutoStop），watch_stop 让检查线程退出
@@ -506,6 +515,8 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     @app.get("/api/env")
     def env() -> dict:
+        if read_only:
+            return {"version": __version__, "read_only": True}
         from . import asr
         from .record import system_audio_supported
 
@@ -942,7 +953,22 @@ def create_app(root: Path | None = None) -> FastAPI:
                 }
                 for t in tr.turns()
             ]
+        if read_only:
+            data.pop("path", None)
         return data
+
+    @app.get("/api/meetings/{meeting_id}/workbench")
+    def get_workbench(meeting_id: str) -> dict:
+        import json
+        path = folder(meeting_id) / "workbench.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    @app.get("/api/meetings/{meeting_id}/original")
+    def get_original(meeting_id: str) -> dict:
+        import json
+        directory = folder(meeting_id)
+        path = directory / "transcript.original.json"
+        return json.loads((path if path.exists() else directory / TRANSCRIPT_JSON).read_text())
 
     @app.get("/api/meetings/{meeting_id}/audio")
     def get_audio(meeting_id: str) -> FileResponse:

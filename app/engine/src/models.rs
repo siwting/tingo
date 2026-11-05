@@ -37,8 +37,9 @@ pub struct ModelInfo {
     pub size: u64,
 }
 
-pub fn catalog() -> [ModelInfo; 4] {
+pub fn catalog() -> [ModelInfo; 5] {
     [
+        ModelInfo { kind: AsrKind::QwenMlx, name: "Qwen3-ASR MLX", desc: "Apple Silicon 本地 MLX；需配置 TINGO_MLX_HELPER 与 TINGO_MLX_MODEL，共用 Tingo 声纹流程", size: 0 },
         ModelInfo { kind: AsrKind::AppleSpeech, name: "Apple Speech",
             desc: tr("macOS 26+ 系统本地识别；请明确选择中文或英文。系统管理语言模型，仍需基础声纹模型", "On-device system speech on macOS 26+. Select Chinese or English. Language assets are system-managed; shared speaker models are still needed"), size: 0 },
         ModelInfo {
@@ -74,7 +75,7 @@ pub fn catalog() -> [ModelInfo; 4] {
 /// 可选模型的发布包（sherpa-onnx 打包好的，解压即用）
 fn archive(kind: AsrKind) -> Option<&'static str> {
     match kind {
-        AsrKind::Paraformer | AsrKind::AppleSpeech => None,
+        AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx => None,
         AsrKind::SenseVoice => Some("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"),
         AsrKind::FunAsrNano => Some("sherpa-onnx-funasr-nano-int8-2025-12-30"),
     }
@@ -113,7 +114,7 @@ pub fn total_size() -> u64 {
 
 /// 下载一个识别模型（连同还没下载的基础模型）。`progress(已下载字节, 总字节)`。
 pub fn ensure_model(paths: &ModelPaths, kind: AsrKind, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
-    if kind == AsrKind::AppleSpeech {
+    if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx) {
         let list = base_downloads();
         fetch_all(paths, &list, &mut progress)?;
         if !paths.punct().is_file() { extract_punct(&paths.dir.join("download/punct.tar.bz2"), paths.punct().parent().unwrap())?; }
@@ -150,7 +151,7 @@ pub fn ensure_model(paths: &ModelPaths, kind: AsrKind, mut progress: impl FnMut(
 
 /// 删除一个可选的识别模型（默认的 Paraformer 不删）
 pub fn remove_model(paths: &ModelPaths, kind: AsrKind) -> Result<(), String> {
-    if matches!(kind, AsrKind::Paraformer | AsrKind::AppleSpeech) {
+    if matches!(kind, AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx) {
         return Err(tr("默认模型不能删除", "The default model can't be deleted").into());
     }
     fs::remove_dir_all(paths.asr_dir(kind)).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e.to_string()) })

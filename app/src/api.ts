@@ -3,6 +3,8 @@
 import { lang, t } from "./i18n";
 
 export interface Env {
+  read_only?: boolean;
+  workbench?: boolean;
   version: string;
   root: string;
   ffmpeg: boolean;
