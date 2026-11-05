@@ -556,7 +556,7 @@ fn spawn_job(state: &Shared, id: &str, work: impl FnOnce(&AppState, &str) -> Res
 async fn env(State(s): State<Shared>) -> Json<Value> {
     let cfg = s.config();
     let s2 = s.clone();
-    let llm_ready = (cfg.llm.api == "codex" && crate::codex::binary().is_file()) || !cfg.llm.api_key.is_empty()
+    let llm_ready = (cfg.llm.api == "codex" && crate::codex::binary().is_file()) || (cfg.llm.api == "claude-cli" && crate::codex::claude_binary().is_file()) || !cfg.llm.api_key.is_empty()
         || tokio::task::spawn_blocking(move || summarize::is_ollama(&s2.config().llm))
             .await
             .unwrap_or(false);
@@ -572,7 +572,7 @@ async fn env(State(s): State<Shared>) -> Json<Value> {
         "models_size_mb": models::total_size() / 1_000_000,
         "model_loaded": s.engine_loaded(),
         "llm_ready": llm_ready,
-        "llm_model": if cfg.llm.api == "codex" && cfg.llm.model.is_empty() { "Codex CLI" } else { &cfg.llm.model },
+        "llm_model": if cfg.llm.api == "codex" && cfg.llm.model.is_empty() { "Codex CLI" } else if cfg.llm.api == "claude-cli" && cfg.llm.model.is_empty() { "Claude Code CLI" } else { &cfg.llm.model },
     }))
 }
 
@@ -687,7 +687,7 @@ async fn put_config(State(s): State<Shared>, Json(r): Json<ConfigReq>) -> ApiRes
     c.llm.base_url = r.base_url.trim().into();
     c.llm.model = r.model.trim().into();
     if let Some(a) = &r.api {
-        if !matches!(a.trim().to_ascii_lowercase().as_str(), "openai" | "anthropic" | "codex") {
+        if !matches!(a.trim().to_ascii_lowercase().as_str(), "openai" | "anthropic" | "codex" | "claude-cli") {
             return Err(bad(tr(&format!("不认识的接口协议：{a}"), &format!("Unknown API protocol: {a}"))));
         }
         c.llm.api = config::normalize_api(Some(a));
@@ -788,9 +788,16 @@ fn list_models(base_url: &str, key: &str, api: &str) -> Option<Vec<String>> {
     Some(ids)
 }
 
+fn cli_status(api: &str) -> Value {
+    let (name, path) = if api == "claude-cli" { ("Claude Code CLI", crate::codex::claude_binary()) } else { ("Codex CLI", crate::codex::binary()) };
+    let ready = path.is_file();
+    let message = if ready { tr("已找到 CLI，将使用已有登录。模型可留空；登录及完整调用在生成时验证。", "CLI found; uses existing login. Model is optional. Login and a full request are verified when generating.") } else { tr("未找到 CLI。请先安装并登录，再重启 App。", "CLI not found. Install and sign in, then restart the app.") };
+    json!({"ok":ready,"models":[],"message":format!("{name}: {message}")})
+}
+
 async fn test_llm(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value> {
     let api = r.api(&s);
-    if api == "codex" { return Json(json!({"ok":crate::codex::binary().is_file(),"models":[],"message":"Codex CLI：使用已有登录；模型可留空使用 CLI 默认值。完整调用在生成时验证。"})); }
+    if matches!(api.as_str(), "codex" | "claude-cli") { return Json(cli_status(&api)); }
     let key = r.api_key.unwrap_or_else(|| s.config().llm.api_key);
     let (url, model) = (r.base_url, r.model);
     let ids = tokio::task::spawn_blocking(move || list_models(&url, &key, &api))
@@ -819,7 +826,7 @@ async fn test_llm(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value>
 
 async fn llm_models(State(s): State<Shared>, Json(r): Json<LlmReq>) -> Json<Value> {
     let api = r.api(&s);
-    if api == "codex" { return Json(json!({"ok":crate::codex::binary().is_file(),"models":[],"message":"Codex CLI：使用已有登录；模型可留空使用 CLI 默认值。完整调用在生成时验证。"})); }
+    if matches!(api.as_str(), "codex" | "claude-cli") { return Json(cli_status(&api)); }
     let key = r.api_key.unwrap_or_else(|| s.config().llm.api_key);
     let url = r.base_url;
     let ids = tokio::task::spawn_blocking(move || list_models(&url, &key, &api))

@@ -37,7 +37,7 @@ export TINGO_MLX_MODEL="你的Qwen3-ASR模型目录"
 
 从继承这些环境变量的终端启动 App，再在识别模型中选择 Qwen3-ASR MLX。首次需准备 Tingo 共用的声纹/VAD 模型。模型文件不复制进 Git，也不隐式替换现有引擎。
 
-内容整理保留 OpenAI 兼容接口、Anthropic 与 Ollama；设置新增 Codex CLI。选择 Codex 预设后可将模型留空，使用 CLI 默认模型，无需 API Key；需要已有 `codex login`。可用 `TINGO_CODEX_BIN` 指定可执行文件。转写文本会发给所选服务；音频在本机处理。CLI 接入使用临时目录、只读沙箱、不加载用户配置并关闭工具，依据[官方非交互文档](https://learn.chatgpt.com/docs/non-interactive-mode)。
+内容整理保留 OpenAI 兼容接口、Anthropic 与 Ollama；设置新增 CLI 分类，仅此分类提供 Claude Code CLI / Codex CLI（已有登录）。模型可留空，使用所选 CLI 的默认模型，无需 API Key；需要先在对应工具登录。可用 `TINGO_CODEX_BIN` / `TINGO_CLAUDE_BIN` 指定可执行文件。Claude Code 使用无工具、无会话持久化的 print 模式，参见[官方 CLI 文档](https://code.claude.com/docs/en/cli-reference)。转写文本会发给所选服务；音频在本机处理。CLI 接入使用临时目录、只读沙箱、不加载用户配置并关闭工具，依据[官方非交互文档](https://learn.chatgpt.com/docs/non-interactive-mode)。
 
 ## 融入原有页面的功能
 

@@ -161,6 +161,7 @@ pub fn normalize_api(v: Option<&str>) -> String {
     match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         Some("anthropic") => "anthropic".into(),
         Some("codex") => "codex".into(),
+        Some("claude-cli") => "claude-cli".into(),
         _ => "openai".into(),
     }
 }

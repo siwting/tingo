@@ -418,8 +418,8 @@ pub fn chat(
     mut on_token: impl FnMut(&str),
     mut on_think: impl FnMut(usize),
 ) -> Result<String, String> {
-    if cfg.api == "codex" {
-        let text=crate::codex::chat(system,prompt,&cfg.model)?;
+    if matches!(cfg.api.as_str(), "codex" | "claude-cli") {
+        let text=if cfg.api == "claude-cli" { crate::codex::claude_chat(system,prompt,&cfg.model)? } else { crate::codex::chat(system,prompt,&cfg.model)? };
         on_token(&text);
         return Ok(text);
     }

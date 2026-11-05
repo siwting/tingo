@@ -6,7 +6,7 @@
 | --- | --- |
 | TypeScript / Vite 生产构建 | 通过 |
 | Rust 引擎单元测试 | 82 项通过 |
-| Rust HTTP 集成测试 | 10 项通过 |
+| Rust HTTP 集成测试 | 11 项通过 |
 | Python 服务、配置、CLI、只读边界和迁移兼容性 | 62 项通过；1 项 FunASR 慢速测试另列环境限制 |
 | macOS Tauri App | debug bundle 构建及临时数据启动通过，ad hoc 签名 |
 | MLX 真实推理 | 12 秒演示录音经 Rust VAD → MLX → CAM++ / 聚类完成 |
@@ -38,3 +38,5 @@ Web 独立启动只读路由，不注册设置、创建、导入、删除、录�
 - Storage 说明色条为 Tingo 文件组成，并移除零字节仍占宽度的显示错误。
 - 清除验收目录环境覆盖后，实际桌面 App 的 About 显示用户的 `Documents/Tingo` 和 `.config/tingo/config.toml`。验收服务均已关闭，正式库为空，旧听记数据未迁移。
 - 新增 HTTP 回归覆盖 Qwen 未配置时拒绝下载且不创建模型目录，以及 Codex 默认模型的状态显示。
+
+CLI 分类调整：实际界面验证两种 CLI 选择保存、切换到 Claude API 后隐藏 CLI 选项；Claude Code CLI 通过 Rust 使用虚构材料完成真实调用。新增成功/错误/空响应解析测试，配置与英文提示 HTTP 回归通过。

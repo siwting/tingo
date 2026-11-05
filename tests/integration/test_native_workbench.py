@@ -120,6 +120,18 @@ class NativeWorkbench(unittest.TestCase):
         self.assertFalse((self.root/'models').exists())
         self.assertEqual(self.request('/api/env')['llm_model'],'Codex CLI')
 
+    def test_067_claude_cli_configuration(self):
+        config=self.request('/api/config')
+        config.update({'api':'claude-cli','model':'','base_url':''})
+        self.request('/api/config',config,'PUT')
+        self.assertEqual(self.request('/api/config')['api'],'claude-cli')
+        self.assertEqual(self.request('/api/env')['llm_model'],'Claude Code CLI')
+        req=urllib.request.Request(self.base+'/api/config/test',data=json.dumps({'api':'claude-cli','model':'','base_url':''}).encode(),headers={'Content-Type':'application/json','X-Tingo-Lang':'en'})
+        with urllib.request.urlopen(req) as response:
+            message=json.load(response)['message']
+        self.assertIn('Claude Code CLI',message)
+        self.assertTrue(message.isascii())
+
     def test_07_reader_rejects_all_mutations(self):
         env={**os.environ,'TINGO_ROOT':str(self.root),'TINGO_CONFIG':str(self.root/'config.toml')}
         process=subprocess.Popen([str(ROOT/'app/engine/target/debug/examples/serve'),str(self.root/'models'),'/usr/bin/false','0'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)

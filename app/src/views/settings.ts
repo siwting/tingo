@@ -18,7 +18,7 @@ interface Preset {
   base_url?: string;
   model?: string;
   /** 接口协议，默认 openai */
-  api?: "openai" | "anthropic" | "codex";
+  api?: "openai" | "anthropic" | "codex" | "claude-cli";
   local?: LocalProvider;
 }
 
@@ -27,7 +27,7 @@ const remotePresets = (): Preset[] => [
   { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-chat" },
   { id: "bailian", name: t("通义千问（百炼）", "Qwen (Bailian)"), base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
-  { id: "codex", name: "Codex CLI", base_url: "", model: "", api: "codex" },
+  { id: "cli", name: "CLI", base_url: "", model: "", api: "codex" },
   { id: "claude", name: "Claude", base_url: "https://api.anthropic.com/v1", model: "claude-sonnet-5", api: "anthropic" },
   { id: "gemini", name: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash" },
   { id: "custom", name: t("自定义", "Custom") },
@@ -269,7 +269,7 @@ function subtitle(tab: Tab, x: Ctx): string {
   switch (tab) {
     case "inbox": return t("本机监视目录", "Watched folders");
     case "llm":
-      return c.api === "codex" ? "Codex CLI" : c.model || t("未设置", "Not set");
+      return c.api === "claude-cli" ? "Claude Code CLI" : c.api === "codex" ? "Codex CLI" : c.model || t("未设置", "Not set");
     case "asr":
       return S.env?.asr_model ?? "Paraformer-large";
     case "hotwords":
@@ -602,7 +602,7 @@ function panelLlm(x: Ctx): void {
   const norm = (u: string) => u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
   const baseInput = () => $<HTMLInputElement>("#sBase");
   const presetOf = () =>
-    getApi() === "codex" ? "codex" : (presets.find((p) => p.base_url && norm(baseInput().value) === norm(p.base_url)) ?? presets[presets.length - 1]).id;
+    ["codex", "claude-cli"].includes(getApi()) ? "cli" : (presets.find((p) => p.base_url && norm(baseInput().value) === norm(p.base_url)) ?? presets[presets.length - 1]).id;
   const dot = (p: Preset) =>
     p.local
       ? `<span class="dot" style="background:${p.local.running ? "var(--green)" : "#c9ccd1"};display:inline-block;margin-right:6px;vertical-align:1px" title="${p.local.running ? t("运行中", "Running") : t("未启动", "Not running")}"></span>`
@@ -621,10 +621,11 @@ function panelLlm(x: Ctx): void {
     )}</p>
     <div class="s-grid">
       <div class="prov-grid" id="sPreset">${presets.map((p) => `<button data-id="${p.id}" title="${esc(p.name)}">${dot(p)}<span>${esc(p.name)}</span></button>`).join("")}</div>
-      <div class="field"><label>${t("接口协议", "API protocol")}</label>
-        ${segChoice("sApi", c.api === "codex" ? "codex" : c.api === "anthropic" ? "anthropic" : "openai", [
+      <div class="field"><label id="sProtocolLabel">${t("接口协议", "API protocol")}</label>
+        ${segChoice("sApi", c.api === "claude-cli" ? "claude-cli" : c.api === "codex" ? "codex" : c.api === "anthropic" ? "anthropic" : "openai", [
           ["openai", "OpenAI 兼容", "OpenAI-compatible"],
           ["anthropic", "Anthropic（Claude）", "Anthropic (Claude)"],
+          ["claude-cli", "Claude Code CLI（使用现有登录）", "Claude Code CLI (existing login)"],
           ["codex", "Codex CLI（使用现有登录）", "Codex CLI (existing login)"],
         ])}</div>
       <div class="s-row2">
@@ -641,13 +642,17 @@ function panelLlm(x: Ctx): void {
   const key = $<HTMLInputElement>("#sKey");
   const getApi = bindSeg("sApi");
   const setApi = (a: string) => $$<HTMLButtonElement>("#sApi button").forEach((b) => b.classList.toggle("on", b.dataset.v === a));
+  let lastCli = c.api === "claude-cli" ? "claude-cli" : "codex";
   const markPreset = () => {
-    const codex = getApi() === "codex";
+    const codex = ["codex", "claude-cli"].includes(getApi());
+    if (codex) lastCli = getApi();
+    $("#sProtocolLabel").textContent = codex ? t("命令行工具", "CLI provider") : t("接口协议", "API protocol");
+    $$<HTMLButtonElement>("#sApi button").forEach(b => b.hidden = ["codex", "claude-cli"].includes(b.dataset.v ?? "") !== codex);
     $$<HTMLButtonElement>("#sPreset button").forEach((b) => b.classList.toggle("on", b.dataset.id === presetOf()));
     baseInput().closest<HTMLElement>(".field")!.hidden = codex;
     key.closest<HTMLElement>(".field")!.hidden = codex;
     $("#sFetch").hidden = codex;
-    model.placeholder = codex ? t("留空使用 Codex 默认模型", "Leave blank for the default Codex model") : t("输入或选择模型", "Enter or select a model");
+    model.placeholder = codex ? t("留空使用所选 CLI 的默认模型", "Leave blank for the selected CLI’s default model") : t("输入或选择模型", "Enter or select a model");
   };
   markPreset();
 
@@ -671,7 +676,7 @@ function panelLlm(x: Ctx): void {
   };
   /** 拉模型列表；manual 为 true 时（点了按钮）把结果告诉用户 */
   const fetchModels = async (manual = false) => {
-    if (getApi() === "codex") return;
+    if (["codex", "claude-cli"].includes(getApi())) return;
     if (!baseInput().value.trim()) {
       if (manual) msg(t("先填接口地址", "Enter the base URL first"), "bad");
       return;
@@ -710,10 +715,10 @@ function panelLlm(x: Ctx): void {
         const p = presets.find((x) => x.id === b.dataset.id);
         if (!p) return;
         msg("");
-        if (p.id === "codex") {
-          setApi("codex"); baseInput().value = ""; model.value = ""; key.value = "";
+        if (p.id === "cli") {
+          setApi(lastCli); baseInput().value = ""; model.value = ""; key.value = "";
           setModels([]); markPreset();
-          msg(t("使用本机 Codex 登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。", "Uses your local Codex login. No URL or API key required. Model is optional; Test checks CLI availability."));
+          msg(t("使用所选 CLI 的已有登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。", "Uses the selected CLI’s existing login. No URL or API key required. Model is optional; Test checks CLI availability."));
           return;
         }
         if (!p.base_url) {
