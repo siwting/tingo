@@ -1,7 +1,6 @@
 """Read-only, opt-in import of Tingji SQLite meetings into Tingo folders.
 
-The full source snapshot is retained beside the native transcript. Audio is not
-copied or reprocessed; callers can choose to import it separately.
+The full source snapshot is retained beside the native transcript. Audio can be copied with SHA-256 verification; it is never reprocessed.
 """
 from __future__ import annotations
 
@@ -9,6 +8,7 @@ import hashlib
 from datetime import datetime
 import json
 import sqlite3
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -19,7 +19,7 @@ def _json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def import_workbench(database: Path, destination: Path) -> dict:
+def import_workbench(database: Path, destination: Path, *, copy_audio: bool = False) -> dict:
     database = database.resolve(strict=True)
     destination.mkdir(parents=True, exist_ok=True)
     result = {"imported": [], "skipped": []}
@@ -29,11 +29,15 @@ def import_workbench(database: Path, destination: Path) -> dict:
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "meetings" not in tables:
             raise ValueError("Not a Tingji workbench database")
+        source_meetings = {}
+        folder_ids = {}
         for row in db.execute("SELECT * FROM meetings ORDER BY date,id"):
             meeting = dict(row)
             identity = hashlib.sha256(str(meeting["id"]).encode()).hexdigest()[:24]
             stamp = datetime.fromisoformat(meeting["date"]).strftime("%Y-%m-%d_%H%M")
             folder = destination / (stamp + "_tingji-" + identity)
+            source_meetings[meeting["id"]] = meeting
+            folder_ids[meeting["id"]] = folder.name
             if folder.exists():
                 result["skipped"].append(meeting["id"])
                 continue
@@ -58,7 +62,7 @@ def import_workbench(database: Path, destination: Path) -> dict:
             if not sentences and meeting.get("transcript"):
                 sentences = [Sentence(0, 0, 0, meeting["transcript"])]
             summary = json.loads(meeting.get("summary") or "{}")
-            lines = ["# " + meeting["title"], "", summary.get("summary", ""), "", "## 待办", ""]
+            lines = ["# " + meeting["title"], "", summary.get("summary", "")]
             lines += ["", "## 决定", ""]
             lines += ["- " + item.get("text", "") for item in summary.get("decisions", [])]
             for topic in summary.get("topics", []):
@@ -92,8 +96,27 @@ def import_workbench(database: Path, destination: Path) -> dict:
                 if snapshot["asr_originals"]:
                     _json(staging / "tingji-original.json", snapshot["asr_originals"][0])
                 _json(staging / "meta.json", {"title": meeting["title"], "tags": [meeting.get("category") or meeting.get("project") or "未分类"], "archived": False})
+                audio_name = None
+                if copy_audio:
+                    source = Path(meeting["source"])
+                    if not source.is_file():
+                        raise FileNotFoundError(f"Missing source audio: {source}")
+                    audio_name = "录音" + source.suffix.lower()
+                    copied = staging / audio_name
+                    shutil.copy2(source, copied)
+                    def digest(path):
+                        h = hashlib.sha256()
+                        with path.open("rb") as stream:
+                            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                                h.update(block)
+                        return h.hexdigest()
+                    checksum = digest(source)
+                    if digest(copied) != checksum:
+                        raise ValueError("Audio copy checksum mismatch")
+                    _json(staging / "audio-import.json", {"source": str(source), "file": audio_name, "sha256": checksum, "bytes": copied.stat().st_size})
                 if sentences:
-                    transcript = Transcript(meeting["source"], max(s.end_ms for s in sentences), sentences)
+                    transcript = Transcript(str(folder / audio_name) if audio_name else meeting["source"], max(s.end_ms for s in sentences), sentences,
+                                            {index: label for label, index in speakers.items() if label != "unknown"})
                     transcript.save(staging / "transcript.json")
                     (staging / "转写.md").write_text(transcript.to_markdown(), encoding="utf-8")
                 if summary:
@@ -105,6 +128,31 @@ def import_workbench(database: Path, destination: Path) -> dict:
         for table in ("glossary", "questions"):
             if table in tables:
                 shared[table] = [dict(r) for r in db.execute(f"SELECT * FROM {table}")]
+        history_path = destination / "questions.json"
+        history = json.loads(history_path.read_text()) if history_path.exists() else []
+        imported_ids = {q.get("imported_id") for q in history}
+        for question in shared.get("questions", []):
+            imported_id = "tingji:" + str(question["id"])
+            if imported_id in imported_ids:
+                continue
+            citations = []
+            for citation in json.loads(question.get("citations") or "[]"):
+                meeting_id = citation.get("meeting_id")
+                source = source_meetings.get(meeting_id)
+                if not source:
+                    continue
+                for segment in json.loads(source.get("segments") or "[]"):
+                    quote = citation.get("quote", "")
+                    if segment.get("segment") == citation.get("segment") and quote and quote in segment.get("text", ""):
+                        citations.append({"meeting": folder_ids[meeting_id], "start_ms": max(0, int(float(segment.get("start", 0))*1000)), "quote": quote})
+                        break
+            history.append({"imported_id": imported_id, "scope": folder_ids.get(question["scope"], question["scope"]),
+                            "question": question["question"], "parts": [{"answer": question.get("answer") or question.get("error") or "", "citations": citations}],
+                            "sentences_reviewed": 0, "imported_coverage": question.get("coverage", ""), "status": question.get("status"), "created": question.get("created")})
+        if shared.get("questions"):
+            temporary = history_path.with_suffix(".tmp")
+            _json(temporary, history)
+            temporary.replace(history_path)
         glossary_path = destination / "glossary.json"
         if not glossary_path.exists():
             glossary = []

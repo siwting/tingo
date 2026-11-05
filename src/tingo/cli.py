@@ -33,10 +33,10 @@ app = typer.Typer(
 )
 
 @app.command("import-workbench")
-def import_workbench_command(database: Path, destination: Path):
-    """导入听记数据库（不修改源库，不复制录音，重复导入跳过）。"""
+def import_workbench_command(database: Path, destination: Path, copy_audio: bool = typer.Option(False, "--copy-audio", help="复制录音并校验 SHA-256")):
+    """导入听记数据库，不修改源库，重复导入跳过。"""
     from .workbench_import import import_workbench
-    result = import_workbench(database, destination)
+    result = import_workbench(database, destination, copy_audio=copy_audio)
     typer.echo(f"导入 {len(result['imported'])} 场，跳过 {len(result['skipped'])} 场")
 
 

@@ -33,6 +33,8 @@ TINGO_WEB_HOST=你的本机局域网或Tailscale地址 ./scripts/run-web.sh
 
 已有环境可通过模型目录内的 `mlx-runtime.json`（`{"python":"绝对路径/bin/python"}`）复用。仍兼容高级覆盖 `TINGO_MLX_PYTHON`、`TINGO_MLX_MODEL`（0.6B）和 `TINGO_MLX_HELPER`。模型文件不入 Git。
 
+自动导入目录、开关、名词库及导入去重索引固定保存在配置文件旁的 `workbench/`（默认 `~/.config/tingo/workbench/`）。首次使用会从当前会议库兼容迁入，已有全局值优先，清空后不会从旧库复活。基础热词与 LLM 等设置继续保存在 `config.toml`。只读 Web 不触发设置迁移。
+
 Storage 可填写新的绝对保存路径，保存到配置旁的 `library.json`，重启 App / Web 后生效。现有会议保留在原位置，不自动移动；切回原目录可再次查看。环境变量 `TINGO_ROOT` 的显式覆盖优先于界面设置。
 
 内容整理保留 OpenAI 兼容接口、Anthropic 与 Ollama；设置新增 CLI 分类，仅此分类提供 Claude Code CLI / Codex CLI（已有登录）。模型可留空，使用所选 CLI 的默认模型，无需 API Key；需要先在对应工具登录。可用 `TINGO_CODEX_BIN` / `TINGO_CLAUDE_BIN` 指定可执行文件。Claude Code 使用无工具、无会话持久化的 print 模式，参见[官方 CLI 文档](https://code.claude.com/docs/en/cli-reference)。转写文本会发给所选服务；音频在本机处理。CLI 接入使用临时目录、只读沙箱、不加载用户配置并关闭工具，依据[官方非交互文档](https://learn.chatgpt.com/docs/non-interactive-mode)。
@@ -52,10 +54,10 @@ Storage 可填写新的绝对保存路径，保存到配置旁的 `library.json`
 ## 旧数据迁移
 
 ```sh
-tingo import-workbench /path/to/meetings/.state/workbench.sqlite3 /path/to/Tingo
+tingo import-workbench /path/to/meetings/.state/workbench.sqlite3 /path/to/Tingo --copy-audio
 ```
 
-源库以只读一致性事务读取，含 WAL；每场转换到原生 `transcript.json`/`meta.json`/`workbench.json`，保留完整源行、人工确认、完成状态、问答和最初原文快照。重复导入跳过已有目录，不覆盖人工修改。全局词库与问答另存源快照。此命令不复制录音、不重新转写、不自动清理源库。
+源库以只读一致性事务读取，含 WAL；每场转换到原生 `transcript.json`/`meta.json`/`workbench.json`，保留完整源行、人工确认、完成状态、问答和最初原文快照。重复导入跳过已有目录，不覆盖人工修改。全局词库与问答另存源快照。`--copy-audio` 会把录音复制到每场会议内并校验 SHA-256，缺失录音时不发布该场目录；不带该选项时仅转换文本。说话人名称保留，历史问答映射为原生作用域和引用链接。此命令不重新转写、不自动清理源库。
 
 ## 验证命令
 

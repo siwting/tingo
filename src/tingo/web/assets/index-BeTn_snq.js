@@ -337,7 +337,7 @@ h1.title { font-size: 25px; line-height: 1.35; margin: 0 0 10px; font-weight: 65
     </div>
 
     <div class="field" style="margin-top:24px"><label for="storageRoot">${o(`会议保存目录`,`Meeting library location`)}</label><input class="input" id="storageRoot" value="${w(t.next_root??t.root)}" ${t.root_overridden||!M.env?.workbench?`disabled`:``}></div>
-    <p class="hint">${o(`修改后重启 App 生效。现有会议仍保留在原目录，不自动移动；可以切回原目录查看。Web 服务也需重启。`,`Restart the app after saving. Existing meetings stay in their original folder; switch back to view them. Restart the web service too.`)}</p>
+    <p class="hint">${o(`修改后重启 App 生效。自动导入目录、热词及其他设置保持不变。现有会议保留在原目录，可切回查看；Web 服务也需重启。`,`Restart the app after saving. Watched folders, hotwords and other settings are retained. Existing meetings stay in their original folder; switch back to view them. Restart the web service too.`)}</p>
     <button class="btn" id="storageSave" ${t.root_overridden||!M.env?.workbench?`disabled`:``}>${o(`保存目录`,`Save location`)}</button><span class="hint" id="storageResult"></span>
     <h3 class="st-h">${o(`清理`,`Clean up`)}</h3>
     <div class="st-row">

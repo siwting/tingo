@@ -32,6 +32,40 @@ pub fn write(path: &Path, value: &Value) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     fs::rename(tmp, path).map_err(|e| e.to_string())
 }
+/// User preferences belong to the configuration, not to a meeting library.
+/// Publish legacy values once; an existing global value (including an empty list) wins.
+pub fn settings_dir(root: &Path, config: &Path) -> Result<std::path::PathBuf, String> {
+    let directory = config.with_file_name("workbench");
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    for (name, default) in [
+        ("glossary.json", json!([])),
+        ("inbox-settings.json", json!({"enabled":false,"directories":[]})),
+        ("inbox-state.json", json!({})),
+    ] {
+        let target = directory.join(name);
+        if target.exists() { continue; }
+        let source = root.join(name);
+        let mut value = if source.exists() { read(&source)? } else { default };
+        match name {
+            "glossary.json" => { validate_terms(value.clone())?; },
+            "inbox-settings.json" => { value = json!(serde_json::from_value::<crate::inbox::Settings>(value).map_err(|e|e.to_string())?); },
+            _ => {
+                let entries = value.as_object_mut().ok_or("Invalid inbox index")?;
+                for item in entries.values_mut() {
+                    if item.get("library").is_none() { item["library"] = json!(root); }
+                }
+            }
+        }
+        // Hard-link publication is atomic and never replaces another process's settings.
+        let temp = directory.join(format!(".{name}-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::write(&temp, serde_json::to_vec_pretty(&value).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let result = fs::hard_link(&temp, &target);
+        let _ = fs::remove_file(&temp);
+        if let Err(e) = result { if e.kind() != std::io::ErrorKind::AlreadyExists { return Err(e.to_string()); } }
+    }
+    Ok(directory)
+}
+
 pub fn validate_terms(value: Value) -> Result<Vec<Term>, String> {
     let mut terms: Vec<Term> = serde_json::from_value(value).map_err(|e| e.to_string())?;
     if terms.len() > 500 {

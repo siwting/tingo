@@ -168,8 +168,9 @@ impl AppState {
     }
 
     fn config(&self) -> Config { config::load(&self.opt.config_path) }
+    fn settings_dir(&self) -> Result<PathBuf, String> { crate::workbench::settings_dir(&self.opt.root, &self.opt.config_path) }
     fn processing_config(&self) -> Config {
-        let mut cfg=self.config();cfg.hotwords.extend(crate::workbench::hotwords(&self.opt.root));
+        let mut cfg=self.config();cfg.hotwords.extend(crate::workbench::hotwords(&self.settings_dir().unwrap_or_else(|_| self.opt.root.clone())));
         cfg.hotwords.sort();cfg.hotwords.dedup();cfg
     }
 
@@ -2300,6 +2301,33 @@ mod tests {
         assert!(root.join("2026-10-01_0900_keep/录音.m4a").exists());
         mark_busy(&s, "2026-10-01_0900_keep");
         assert!(storage_location(State(s.clone()), Json(json!({"root":root}))).await.is_err());
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn preferences_survive_library_changes_and_old_data_cannot_resurrect() {
+        let (s, root, _) = test_state("persistent-preferences");
+        let watched = root.parent().unwrap().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let terms = json!([{"name":"正式名称","aliases":["真实称呼"],"errors":["错字"],"enabled":true}]);
+        let inbox = json!({"enabled":true,"directories":[watched]});
+        crate::workbench::write(&root.join("glossary.json"), &terms).unwrap();
+        crate::workbench::write(&root.join("inbox-settings.json"), &inbox).unwrap();
+        crate::workbench::write(&root.join("inbox-state.json"), &json!({"source":{"state":"done","signature":"same"}})).unwrap();
+        assert_eq!(glossary_get(State(s.clone())).await.unwrap().0, terms);
+        let new_root = root.parent().unwrap().join("new-library");
+        let _ = storage_location(State(s.clone()), Json(json!({"root":new_root}))).await.unwrap();
+        let next = AppState::reader(Options {root:new_root,config_path:s.opt.config_path.clone(),models_dir:s.opt.models_dir.clone(),recorder_bin:s.opt.recorder_bin.clone(),version:"test".into(),sample_dir:s.opt.sample_dir.clone()});
+        assert_eq!(inbox_get(State(next.clone())).await.unwrap().0, inbox);
+        assert_eq!(glossary_get(State(next.clone())).await.unwrap().0, terms);
+        assert!(next.processing_config().hotwords.contains(&"真实称呼".to_string()));
+        assert_eq!(crate::workbench::read(&next.settings_dir().unwrap().join("inbox-state.json")).unwrap()["source"]["state"], "done");
+        assert!(storage_location(State(next.clone()), Json(json!({"root":watched.join("nested-library")}))).await.is_err());
+        // An intentional clearing stays cleared even after switching back to a legacy library.
+        let _ = glossary_put(State(next.clone()), Json(json!([]))).await.unwrap();
+        let _ = inbox_put(State(next.clone()), Json(json!({"enabled":false,"directories":[]}))).await.unwrap();
+        assert_eq!(glossary_get(State(s.clone())).await.unwrap().0, json!([]));
+        assert_eq!(inbox_get(State(s.clone())).await.unwrap().0["directories"], json!([]));
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 

@@ -86,13 +86,13 @@ class NativeWorkbench(unittest.TestCase):
         source=inbox/'synthetic.wav';source.write_bytes(b'synthetic-placeholder')
         stat=source.stat();signature=f'{stat.st_size}:{stat.st_mtime_ns//1000000000}:{stat.st_mtime_ns%1000000000}'
         index={str(source):{'signature':signature,'seen':time.time()-121,'attempts':0,'state':'waiting','meeting':self.meeting.name}}
-        (self.root/'inbox-state.json').write_text(json.dumps(index))
+        (self.root/'workbench/inbox-state.json').write_text(json.dumps(index))
         before=(self.meeting/'transcript.json').read_bytes()
         self.request('/api/workbench/inbox',{'enabled':True,'directories':[str(inbox)]},'PUT')
         deadline=time.time()+35
         try:
             while time.time()<deadline:
-                state=json.loads((self.root/'inbox-state.json').read_text())[str(source)]
+                state=json.loads((self.root/'workbench/inbox-state.json').read_text())[str(source)]
                 if state['state'] in ('done','error'):break
                 time.sleep(.2)
             self.assertEqual(state['state'],'done',state)
@@ -137,6 +137,43 @@ class NativeWorkbench(unittest.TestCase):
             message=json.load(response)['message']
         self.assertIn('Claude Code CLI',message)
         self.assertTrue(message.isascii())
+
+    def test_068_preferences_survive_real_library_restart(self):
+        with tempfile.TemporaryDirectory(prefix='tingo-settings-') as temp:
+            base=Path(temp); old=base/'old';new=base/'new';watched=base/'watched'
+            old.mkdir();watched.mkdir()
+            config=base/'config.toml';config.write_text('')
+            (base/'library.json').write_text(json.dumps({'root':str(old)}))
+            expected=[{'name':'正式名称','aliases':['称呼'],'errors':['误写'],'enabled':True}]
+            (old/'glossary.json').write_text(json.dumps(expected))
+            env={**os.environ,'TINGO_CONFIG':str(config)}
+            env.pop('TINGO_ROOT',None);env.pop('JIYAO_ROOT',None)
+            process=None
+            def start():
+                nonlocal process
+                process=subprocess.Popen([str(ROOT/'app/engine/target/debug/examples/serve'),str(base/'models'),'/usr/bin/false','0','--desktop-api'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                line=process.stdout.readline().strip()
+                self.assertTrue(line.startswith('TINGO_PORT='),line)
+                return 'http://127.0.0.1:'+line.split('=')[1]
+            def stop():
+                process.terminate();process.wait(timeout=10);process.stdout.close();process.stderr.close()
+            url=start()
+            def request(path,body=None):
+                req=urllib.request.Request(url+path,data=json.dumps(body).encode() if body is not None else None,method='PUT' if body is not None else 'GET',headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(req,timeout=10) as response:return json.load(response)
+            try:
+                self.assertEqual(request('/api/glossary'),expected)
+                inbox={'enabled':True,'directories':[str(watched)]}
+                request('/api/workbench/inbox',inbox)
+                cfg=request('/api/config');cfg['hotwords']=['基础热词'];request('/api/config',cfg)
+                request('/api/storage/location',{'root':str(new)})
+                stop();url=start()
+                self.assertEqual(request('/api/env')['root'],str(new.resolve()))
+                self.assertEqual(request('/api/glossary'),expected)
+                self.assertEqual(request('/api/workbench/inbox'),inbox)
+                self.assertEqual(request('/api/config')['hotwords'],['基础热词'])
+                self.assertEqual(request('/api/meetings'),[])
+            finally:stop()
 
     def test_07_reader_rejects_all_mutations(self):
         env={**os.environ,'TINGO_ROOT':str(self.root),'TINGO_CONFIG':str(self.root/'config.toml')}

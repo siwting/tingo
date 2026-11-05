@@ -8,7 +8,8 @@ pub(super) fn start_inbox(state: &Shared) {
         let Some(s) = weak.upgrade() else {
             break;
         };
-        let settings_path = s.opt.root.join("inbox-settings.json");
+        let Ok(settings_dir) = s.settings_dir() else { continue; };
+        let settings_path = settings_dir.join("inbox-settings.json");
         let settings = crate::workbench::read(&settings_path)
             .ok()
             .and_then(|v| serde_json::from_value::<crate::inbox::Settings>(v).ok())
@@ -16,7 +17,7 @@ pub(super) fn start_inbox(state: &Shared) {
         if !settings.enabled {
             continue;
         }
-        let index_path = s.opt.root.join("inbox-state.json");
+        let index_path = settings_dir.join("inbox-state.json");
         let mut index = match crate::workbench::read(&index_path) {
             Ok(v) => v,
             Err(_) => continue,
@@ -34,11 +35,13 @@ pub(super) fn start_inbox(state: &Shared) {
             let key = file.to_string_lossy().to_string();
             if index[&key]["signature"].as_str() != Some(&signature) {
                 index[&key] =
-                    json!({"signature":signature,"seen":now(),"attempts":0,"state":"waiting"});
+                    json!({"signature":signature,"seen":now(),"attempts":0,"state":"waiting","library":s.opt.root});
                 let _ = crate::workbench::write(&index_path, &index);
                 continue;
             }
             let item = &index[&key];
+            // A pending job belongs to its original library; do not attach it to a new one.
+            if item["state"] != "done" && item["meeting"].is_string() && item["library"].as_str().is_some_and(|p| Path::new(p) != s.opt.root) { continue; }
             if item["state"] == "done"
                 || item["attempts"].as_u64().unwrap_or(0) >= 3
                 || now() - item["seen"].as_f64().unwrap_or(now()) < 120.
@@ -141,7 +144,7 @@ pub(super) fn start_inbox(state: &Shared) {
     });
 }
 pub(super) async fn inbox_get(State(s): State<Shared>) -> ApiResult<Json<Value>> {
-    let value = crate::workbench::read(&s.opt.root.join("inbox-settings.json")).map_err(server_error)?;
+    let value = crate::workbench::read(&s.settings_dir().map_err(server_error)?.join("inbox-settings.json")).map_err(server_error)?;
     let settings: crate::inbox::Settings = serde_json::from_value(value).map_err(|e| server_error(e.to_string()))?;
     Ok(Json(json!(settings)))
 }
@@ -164,13 +167,13 @@ pub(super) async fn inbox_put(
     let _g = s.workbench_lock.lock().unwrap();
     std::fs::create_dir_all(&s.opt.root).map_err(|e| server_error(e.to_string()))?;
     let v = json!(settings);
-    crate::workbench::write(&s.opt.root.join("inbox-settings.json"), &v).map_err(server_error)?;
+    crate::workbench::write(&s.settings_dir().map_err(server_error)?.join("inbox-settings.json"), &v).map_err(server_error)?;
     Ok(Json(v))
 }
 
 pub(super) async fn glossary_get(State(s): State<Shared>) -> ApiResult<Json<Value>> {
     let _g = s.workbench_lock.lock().unwrap();
-    let p = s.opt.root.join("glossary.json");
+    let p = s.settings_dir().map_err(server_error)?.join("glossary.json");
     Ok(Json(if p.exists() {
         crate::workbench::read(&p).map_err(server_error)?
     } else {
@@ -185,7 +188,7 @@ pub(super) async fn glossary_put(
     let _g = s.workbench_lock.lock().unwrap();
     std::fs::create_dir_all(&s.opt.root).map_err(|e| server_error(e.to_string()))?;
     let value = json!(terms);
-    crate::workbench::write(&s.opt.root.join("glossary.json"), &value).map_err(server_error)?;
+    crate::workbench::write(&s.settings_dir().map_err(server_error)?.join("glossary.json"), &value).map_err(server_error)?;
     Ok(Json(value))
 }
 pub(super) async fn workbench_get(
@@ -242,7 +245,7 @@ pub(super) async fn correct_transcript(
     let replacement = v["replacement"]
         .as_str()
         .ok_or_else(|| bad("缺少正确写法"))?;
-    if crate::workbench::known_names(&s.opt.root)
+    if crate::workbench::known_names(&s.settings_dir().map_err(server_error)?)
         .iter()
         .any(|w| w == original)
     {
@@ -470,6 +473,14 @@ pub(super) async fn storage_location(State(s): State<Shared>, Json(v): Json<Valu
     let probe = path.join(format!(".tingo-write-check-{}", std::process::id()));
     let _file = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|e| bad(e.to_string()))?;
     std::fs::remove_file(&probe).map_err(|e| bad(e.to_string()))?;
+    // Ensure old library preferences are persisted before the active path can change.
+    let settings_dir = s.settings_dir().map_err(server_error)?;
+    let settings: crate::inbox::Settings = serde_json::from_value(crate::workbench::read(&settings_dir.join("inbox-settings.json")).map_err(server_error)?).map_err(|e|bad(e.to_string()))?;
+    for watched in settings.directories {
+        if watched.canonicalize().is_ok_and(|d| path.starts_with(d)) {
+            return Err(bad(tr("会议目录不能位于自动导入目录内，避免重复导入", "The library cannot be inside a watched folder")));
+        }
+    }
     let location = s.opt.config_path.with_file_name("library.json");
     std::fs::create_dir_all(location.parent().unwrap()).map_err(|e| server_error(e.to_string()))?;
     crate::workbench::write(&location, &json!({"root":path})).map_err(server_error)?;
