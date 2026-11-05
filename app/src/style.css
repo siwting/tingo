@@ -745,3 +745,8 @@ a.tag-chip.sm:hover { color: var(--blue); }
 .reader audio { display:block; width:100%; margin:20px 0; }
 .reader { max-width: 1000px; }
 @media(max-width:700px) { .reader-mode .app { grid-template-columns: minmax(0,1fr); } .reader-mode .sidebar { display:none; } .reader-mode #main { margin:0; } .reader-mode .page { padding:20px; } }
+
+.workbench .task-row { display:grid; grid-template-columns:auto minmax(120px,1fr) minmax(90px,.4fr) 150px; gap:8px; align-items:center; }
+.workbench .field { display:block; margin:12px 0; }
+.workbench details { margin:20px 0; }
+@media(max-width:760px) { .workbench .task-row { grid-template-columns:auto 1fr; } }

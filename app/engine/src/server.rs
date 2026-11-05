@@ -572,7 +572,7 @@ async fn env(State(s): State<Shared>) -> Json<Value> {
         "models_size_mb": models::total_size() / 1_000_000,
         "model_loaded": s.engine_loaded(),
         "llm_ready": llm_ready,
-        "llm_model": cfg.llm.model,
+        "llm_model": if cfg.llm.api == "codex" && cfg.llm.model.is_empty() { "Codex CLI" } else { &cfg.llm.model },
     }))
 }
 
@@ -1824,6 +1824,9 @@ fn paraformer_warning() -> &'static str {
 async fn download_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Json<Job>> {
     let kind = model_kind(&id)?;
     let paths = s.model_paths();
+    if kind == AsrKind::QwenMlx && !crate::mlx::ready() {
+        return Err(bad(tr("未找到本机 MLX 环境或模型。请配置 TINGO_MLX_HELPER、TINGO_MLX_PYTHON 和 TINGO_MLX_MODEL 后重新启动 App。", "Local MLX setup was not found. Configure TINGO_MLX_HELPER, TINGO_MLX_PYTHON and TINGO_MLX_MODEL, then restart the app.")));
+    }
     if kind != AsrKind::AppleSpeech && paths.base_ready() && paths.asr_ready(kind) {
         return Err(bad(tr("这个模型已经下载好了", "This model is already downloaded")));
     }

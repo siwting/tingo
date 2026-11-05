@@ -1,5 +1,4 @@
 import { renderReader } from "./views/reader";
-import { renderWorkbench } from "./views/workbench";
 import { $$, main } from "./dom";
 import { S } from "./state";
 import { renderDetail, stopAudio } from "./views/detail";
@@ -24,8 +23,8 @@ export function route(): void {
     const at = Number(new URLSearchParams(query ?? "").get("t"));
     renderDetail(id, false, Number.isFinite(at) && query ? at : undefined);
   } else if (h === "/workbench") {
-    nav = "workbench";
-    renderWorkbench();
+    nav = "meetings";
+    renderMeetings();
   } else if (h === "/meetings") {
     nav = "meetings";
     renderMeetings();

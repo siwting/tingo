@@ -38,6 +38,7 @@ class NativeWorkbench(unittest.TestCase):
         config=cls.root/'config.toml'
         config.write_text(f'[llm]\nbase_url="http://127.0.0.1:{cls.llm.server_port}/v1"\napi_key="test-only"\nmodel="fixture"\n')
         env={**os.environ,'TINGO_ROOT':str(cls.root),'TINGO_CONFIG':str(config)}
+        env.pop('TINGO_MLX_HELPER',None);env.pop('TINGO_MLX_MODEL',None)
         binary=ROOT/'app/engine/target/debug/examples/serve'
         cls.process=subprocess.Popen([str(binary),str(cls.root/'models'),'/usr/bin/false','0','--desktop-api'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         line=cls.process.stdout.readline().strip()
@@ -53,7 +54,8 @@ class NativeWorkbench(unittest.TestCase):
         from urllib.parse import quote
         return '/api/meetings/'+quote(self.meeting.name)+suffix
     def test_01_browser_assets(self):
-        with urllib.request.urlopen(self.base) as r:self.assertIn(b'workbench',r.read())
+        with urllib.request.urlopen(self.base) as r:
+            html=r.read(); self.assertIn(b'assets/',html); self.assertNotIn(b'data-nav="workbench"',html)
     def test_02_glossary_guards(self):
         good=[{'name':'袁夕华','aliases':['夕华'],'errors':['西华'],'enabled':True}]
         self.assertEqual(self.request('/api/glossary',good,'PUT'),good)
@@ -110,6 +112,13 @@ class NativeWorkbench(unittest.TestCase):
         self.request('/api/config',config,'PUT')
         self.assertEqual(self.request('/api/config')['api'],'codex')
         self.assertNotIn('袁夕华',self.request('/api/config')['hotwords'])
+
+    def test_066_qwen_missing_setup_is_not_a_download(self):
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            self.request('/api/models/qwen-mlx/download',{},'POST')
+        self.assertEqual(failure.exception.code,400)
+        self.assertFalse((self.root/'models').exists())
+        self.assertEqual(self.request('/api/env')['llm_model'],'Codex CLI')
 
     def test_07_reader_rejects_all_mutations(self):
         env={**os.environ,'TINGO_ROOT':str(self.root),'TINGO_CONFIG':str(self.root/'config.toml')}

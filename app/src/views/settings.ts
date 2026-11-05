@@ -1,3 +1,4 @@
+import { mountGlossary, mountInbox } from "./workbench";
 /* 设置：左边二级菜单，右边一次只显示一项——大模型（本机中转一键选择 + 远程服务 + 自定义）、识别模型（桌面版可下载切换）、
    热词、推送到群、Obsidian、运行环境。每一项单独保存。 */
 
@@ -156,8 +157,9 @@ async function drawAsr(): Promise<void> {
     if (m.system && m.available === false) return `<span class="asr-badge">${t("不可用", "Unavailable")}</span>`;
     if (m.active && m.ready) return `<span class="asr-badge">${t("使用中", "In use")}</span>`;
     if (m.ready)
-      return `${m.id !== "paraformer" && !m.system ? `<button class="btn ghost asr-del" data-del="${m.id}">${delArmed.has(m.id) ? t("确认删除", "Confirm") : t("删除", "Delete")}</button>` : ""}<button class="btn" data-use="${m.id}">${t("使用", "Use")}</button>`;
+      return `${m.id !== "paraformer" && m.id !== "qwen-mlx" && !m.system ? `<button class="btn ghost asr-del" data-del="${m.id}">${delArmed.has(m.id) ? t("确认删除", "Confirm") : t("删除", "Delete")}</button>` : ""}<button class="btn" data-use="${m.id}">${t("使用", "Use")}</button>`;
     if (m.id === dlId) return `<div class="asr-prog"><div class="asr-bar"><i id="asrBar"></i></div><small id="asrText">${t("准备下载…", "Starting download…")}</small></div>`;
+    if (m.id === "qwen-mlx") return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${t("检查本地环境", "Check local setup")}</button>`;
     if (m.system) return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${t("检查／安装", "Check / install")}</button>`;
     return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${ICON.download}${t("下载", "Download")} · ${m.size_mb} MB</button>`;
   };
@@ -225,7 +227,7 @@ export function updateSettingsJob(job: Job, prev: Job): void {
   } else updateAsrProgress(job);
 }
 
-type Tab = "llm" | "asr" | "record" | "lang" | "hotwords" | "push" | "obsidian" | "storage" | "about";
+type Tab = "inbox" | "llm" | "asr" | "record" | "lang" | "hotwords" | "push" | "obsidian" | "storage" | "about";
 
 interface Ctx {
   c: Config;
@@ -238,6 +240,7 @@ const tabs = (): { id: Tab; name: string; icon: keyof typeof ICON }[] => [
   { id: "llm", name: t("大模型", "LLM"), icon: "bot" },
   { id: "asr", name: t("识别模型", "Speech model"), icon: "mic" },
   { id: "record", name: t("录音", "Recording"), icon: "mic" },
+  ...(S.env?.workbench ? [{ id: "inbox" as const, name: t("自动导入", "Automatic import"), icon: "folder" as const }] : []),
   { id: "lang", name: t("语言", "Language"), icon: "globe" },
   { id: "hotwords", name: t("热词", "Hotwords"), icon: "spark" },
   { id: "push", name: t("推送到群", "Share to chat"), icon: "send" },
@@ -264,8 +267,9 @@ const platformOf = (url: string) =>
 function subtitle(tab: Tab, x: Ctx): string {
   const c = x.c;
   switch (tab) {
+    case "inbox": return t("本机监视目录", "Watched folders");
     case "llm":
-      return c.model || t("未设置", "Not set");
+      return c.api === "codex" ? "Codex CLI" : c.model || t("未设置", "Not set");
     case "asr":
       return S.env?.asr_model ?? "Paraformer-large";
     case "hotwords":
@@ -278,7 +282,7 @@ function subtitle(tab: Tab, x: Ctx): string {
         : t("未设置", "Not set");
     case "storage":
       return S.meetings.length
-        ? t(`${S.meetings.length} 场 · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`, `${S.meetings.length} meetings · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`)
+        ? t(`${S.meetings.length} 场 · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`, `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"} · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`)
         : t("还没有会议", "No meetings yet");
     case "record": {
       const n = c.auto_stop_silence_min ?? 10;
@@ -364,6 +368,7 @@ export async function renderSettings(tab: string = "llm"): Promise<void> {
 }
 
 const PANELS: Record<Tab, (x: Ctx) => void | Promise<void>> = {
+  inbox: () => mountInbox($("#sPanel")),
   llm: panelLlm,
   asr: panelAsr,
   lang: panelLang,
@@ -440,11 +445,11 @@ async function panelStorage(): Promise<void> {
   }
   const other = Math.max(0, st.meetings_bytes - st.audio_bytes);
   const total = st.meetings_bytes + (st.models_bytes ?? 0);
-  const pct = (n: number) => (total ? Math.max(0.5, (n / total) * 100) : 0).toFixed(1);
+  const pct = (n: number) => (total ? (n / total) * 100 : 0).toFixed(1);
   panel.innerHTML = `
     <h2>${t("存储", "Storage")}</h2>
     <p class="hint">${t(`会议保存在 ${esc(st.root)}，磁盘还剩 ${fmtBytes(st.free_bytes)}。删除的东西都会进废纸篓，清空废纸篓后才真正腾出空间。`, `Meetings live in ${esc(st.root)}; ${fmtBytes(st.free_bytes)} free on this disk. Everything deleted goes to the Trash — empty it to actually free the space.`)}</p>
-    <div class="st-bar">
+    <p class="hint">${t(`Tingo 文件占用 ${fmtBytes(total)}；下方显示这些文件的组成，并非磁盘使用率。`, `Tingo files use ${fmtBytes(total)}. The bar shows their composition, not disk capacity.`)}</p><div class="st-bar">
       <i class="a" style="width:${pct(st.audio_bytes)}%"></i><i class="b" style="width:${pct(other)}%"></i>${st.models_bytes ? `<i class="c" style="width:${pct(st.models_bytes)}%"></i>` : ""}
     </div>
     <div class="st-legend">
@@ -597,7 +602,7 @@ function panelLlm(x: Ctx): void {
   const norm = (u: string) => u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
   const baseInput = () => $<HTMLInputElement>("#sBase");
   const presetOf = () =>
-    (presets.find((p) => p.base_url && norm(baseInput().value) === norm(p.base_url)) ?? presets[presets.length - 1]).id;
+    getApi() === "codex" ? "codex" : (presets.find((p) => p.base_url && norm(baseInput().value) === norm(p.base_url)) ?? presets[presets.length - 1]).id;
   const dot = (p: Preset) =>
     p.local
       ? `<span class="dot" style="background:${p.local.running ? "var(--green)" : "#c9ccd1"};display:inline-block;margin-right:6px;vertical-align:1px" title="${p.local.running ? t("运行中", "Running") : t("未启动", "Not running")}"></span>`
@@ -636,7 +641,14 @@ function panelLlm(x: Ctx): void {
   const key = $<HTMLInputElement>("#sKey");
   const getApi = bindSeg("sApi");
   const setApi = (a: string) => $$<HTMLButtonElement>("#sApi button").forEach((b) => b.classList.toggle("on", b.dataset.v === a));
-  const markPreset = () => $$<HTMLButtonElement>("#sPreset button").forEach((b) => b.classList.toggle("on", b.dataset.id === presetOf()));
+  const markPreset = () => {
+    const codex = getApi() === "codex";
+    $$<HTMLButtonElement>("#sPreset button").forEach((b) => b.classList.toggle("on", b.dataset.id === presetOf()));
+    baseInput().closest<HTMLElement>(".field")!.hidden = codex;
+    key.closest<HTMLElement>(".field")!.hidden = codex;
+    $("#sFetch").hidden = codex;
+    model.placeholder = codex ? t("留空使用 Codex 默认模型", "Leave blank for the default Codex model") : t("输入或选择模型", "Enter or select a model");
+  };
   markPreset();
 
   let modelList: string[] = [];
@@ -659,6 +671,7 @@ function panelLlm(x: Ctx): void {
   };
   /** 拉模型列表；manual 为 true 时（点了按钮）把结果告诉用户 */
   const fetchModels = async (manual = false) => {
+    if (getApi() === "codex") return;
     if (!baseInput().value.trim()) {
       if (manual) msg(t("先填接口地址", "Enter the base URL first"), "bad");
       return;
@@ -697,7 +710,14 @@ function panelLlm(x: Ctx): void {
         const p = presets.find((x) => x.id === b.dataset.id);
         if (!p) return;
         msg("");
+        if (p.id === "codex") {
+          setApi("codex"); baseInput().value = ""; model.value = ""; key.value = "";
+          setModels([]); markPreset();
+          msg(t("使用本机 Codex 登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。", "Uses your local Codex login. No URL or API key required. Model is optional; Test checks CLI availability."));
+          return;
+        }
         if (!p.base_url) {
+          setApi("openai");
           // 自定义：清空，让用户填自己的地址；哪个预设高亮是按地址判断的，不清空就会跳回原来那个
           baseInput().value = "";
           model.value = "";
@@ -731,7 +751,7 @@ function panelLlm(x: Ctx): void {
   baseInput().oninput = markPreset;
   baseInput().onchange = () => fetchModels();
   key.onchange = () => fetchModels(); // 填了 Key 才拿得到模型列表的服务（OpenAI、Claude 等），填完自动拉一次
-  $$<HTMLButtonElement>("#sApi button").forEach((b) => b.addEventListener("click", () => fetchModels()));
+  $$<HTMLButtonElement>("#sApi button").forEach((b) => b.addEventListener("click", () => { markPreset(); fetchModels(); }));
 
   $("#sTest").onclick = async () => {
     msg(t("连接中…", "Connecting…"));
@@ -750,20 +770,24 @@ function panelLlm(x: Ctx): void {
 
 function panelHotwords(x: Ctx): void {
   const hot = [...x.c.hotwords];
-  const nano = S.env?.asr_model === "Fun-ASR-Nano";
+  const nano = ["Fun-ASR-Nano", "Qwen3-ASR MLX"].includes(S.env?.asr_model ?? "");
   $("#sPanel").innerHTML = `
     <h2>${t("热词", "Hotwords")}</h2>
     <p class="hint">${t("人名、项目代号、内部系统名、行业术语。每场会议都生效，录音时也可以给单场会议临时加几个。", "Names, project codes, internal systems, jargon. Applied to every meeting; you can add a few more per meeting when recording.")}</p>
     <div class="tags" id="sTags"><input id="sTagInput" placeholder="${t("输入后回车添加，可以一次粘贴多个（用逗号或空格隔开）", "Type and press Enter — paste several at once, separated by commas or spaces")}"></div>
     <div class="note-box">${
       nano
-        ? t("当前识别模型 Fun-ASR-Nano 会在识别时直接用上这些词；生成纪要时也会交给大模型核对同音字。", "Fun-ASR-Nano uses these words during recognition; they're also given to the LLM as a glossary when writing minutes.")
+        ? t("当前识别模型会在识别时直接用上这些词；生成纪要时也会交给大模型核对同音字。", "The selected model uses these words during recognition; they're also given to the LLM as a glossary when writing minutes.")
         : t(
             "当前识别模型不支持热词，这些词会作为术语表交给大模型，在写纪要时纠正同音字（比如“历史中单”→“历史工单”）。想在识别时就用上，可以在「识别模型」里换成 Fun-ASR-Nano。",
             "The current speech model doesn't take hotwords, so they're given to the LLM as a glossary to fix misheard words in the minutes. To use them during recognition, switch to Fun-ASR-Nano under Speech model.",
           )
     }</div>
     ${panelFoot()}`;
+  if (S.env?.workbench) {
+    $("#sPanel").insertAdjacentHTML("beforeend", '<div id="glossaryPanel"></div>');
+    void mountGlossary($("#glossaryPanel"));
+  }
   const tagInput = $<HTMLInputElement>("#sTagInput");
   const drawTags = () => {
     $$("#sTags .chip").forEach((el) => el.remove());

@@ -1,3 +1,4 @@
+import { mountQuestions } from "./workbench";
 import { api, type MeetingSummary } from "../api";
 import { isEn, speakerName, t } from "../i18n";
 import { $, $$, $maybe, color, errorMessage, esc, fmt, ICON, initial, main, toast } from "../dom";
@@ -18,10 +19,11 @@ export function renderMeetings(): void {
         <span class="grow"></span>
         <label class="search">${ICON.search}<input class="input" id="mSearch" placeholder="${t("搜索会议里说过的话", "Search everything that was said")}"></label>
       </div>
-      <div class="m-tools" id="mTools"></div>
+      ${S.env?.workbench ? `<details class="card"><summary>${t("跨会议问答", "Ask across meetings")}</summary><div id="allQuestions"></div></details>` : ""}<div class="m-tools" id="mTools"></div>
       <div id="mList"></div>
       <div class="batch-bar" id="mBatch" hidden></div>
     </div>`;
+  if (S.env?.workbench) void mountQuestions($("#allQuestions"));
   const search = $<HTMLInputElement>("#mSearch");
   let timer: number | undefined;
   search.oninput = () => {
@@ -145,7 +147,7 @@ function drawMeetings(q: string): void {
       (!q || (m.title + m.summary + m.speakers.join("") + (m.tags ?? []).join("")).includes(q)),
   );
   const root = S.env ? S.env.root.replace(/^\/Users\/[^/]+/, "~") : "~/Documents/tingo";
-  $("#mCount").textContent = S.meetings.length ? t(`共 ${S.meetings.length} 场，存放在 ${root}`, `${S.meetings.length} meetings, stored in ${root}`) : "";
+  $("#mCount").textContent = S.meetings.length ? t(`共 ${S.meetings.length} 场，存放在 ${root}`, `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"}, stored in ${root}`) : "";
   if (!S.meetings.length) {
     box.innerHTML = `<div class="empty"><h3>${t("还没有会议", "No meetings yet")}</h3><div>${t("开一场会，或者把已有的录音拖进窗口", "Start a meeting, or drop an existing recording into the window")}</div><a class="btn primary" href="#/">${t("开始录音", "Start recording")}</a></div>`;
     return;

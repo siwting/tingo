@@ -1,11 +1,7 @@
-import { api, meetingPath, type MeetingSummary } from "../api";
-import { $, main, esc, errorMessage } from "../dom";
-type Term = {
-  name: string;
-  aliases: string[];
-  errors: string[];
-  enabled: boolean;
-};
+/** Shared controls mounted inside existing meetings and settings pages. */
+import { api, meetingPath } from "../api";
+import { esc } from "../dom";
+import { t } from "../i18n";
 type Answer = {
   parts: {
     answer: string;
@@ -13,330 +9,284 @@ type Answer = {
   }[];
   sentences_reviewed: number;
 };
-export async function renderWorkbench(): Promise<void> {
-  main().innerHTML =
-    '<div class="page workbench"><h1>会议工作台</h1><p id="wbStatus">加载中…</p><div id="wbBody"></div></div>';
-  try {
-    const meetings = await api<MeetingSummary[]>("/api/meetings");
-    let terms = await api<Term[]>("/api/glossary");
-    const options = meetings
-      .map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`)
-      .join("");
-    $("#wbStatus").textContent = "AI 分析需要核对原文；音频在本机处理。";
-    $("#wbBody").innerHTML =
-      `<h2>问会议</h2><select id="scope"><option value="all">全部会议</option>${options}</select><textarea id="question" rows="3" maxlength="4000" placeholder="输入问题"></textarea><button class="btn" id="ask">提问</button><button class="btn" id="history">问答历史</button><div id="answer"></div><h2>专有名词</h2><div id="terms"></div><input id="name" placeholder="正式名称"><input id="aliases" placeholder="真实称呼，逗号分隔"><input id="errors" placeholder="错误写法，逗号分隔"><button class="btn" id="add">添加</button><h2>本场原文纠正</h2><select id="meeting">${options}</select><input id="original" maxlength="64" placeholder="错误写法"><input id="replacement" maxlength="64" placeholder="正确写法"><button class="btn" id="correct">纠正并保留原始转写</button><button class="btn" id="originalView">最初 ASR 原文</button><div id="originalText"></div>`;
-
-    $("#wbBody").insertAdjacentHTML(
-      "beforeend",
-      `<h2>待办与纪要确认</h2><button class="btn" id="loadNotes">加载所选会议</button><button class="btn" id="classify">智能标题与分类</button><div id="notes"></div><h2>自动投递</h2><p>文件稳定 120 秒且未被占用后处理；失败每 5 分钟重试，最多 3 次。</p><label><input type="checkbox" id="inboxEnabled">启用</label><textarea id="inboxDirs" rows="3" placeholder="每行一个本机目录的绝对路径"></textarea><button class="btn" id="saveInbox">保存投递设置</button>`,
-    );
-    const inbox = await api<{ enabled?: boolean; directories?: string[] }>(
-      "/api/workbench/inbox",
-    );
-    $<HTMLInputElement>("#inboxEnabled").checked = !!inbox.enabled;
-    $<HTMLTextAreaElement>("#inboxDirs").value = (inbox.directories ?? []).join(
-      "\n",
-    );
-    $("#saveInbox").onclick = async () => {
-      try {
-        await api("/api/workbench/inbox", {
-          method: "PUT",
-          json: {
-            enabled: $<HTMLInputElement>("#inboxEnabled").checked,
-            directories: $<HTMLTextAreaElement>("#inboxDirs")
-              .value.split("\n")
-              .map((x) => x.trim())
-              .filter(Boolean),
-          },
-        });
-        $("#wbStatus").textContent = "投递设置已保存";
-      } catch (e) {
-        report(e);
-      }
-    };
-    $("#classify").onclick = async () => {
-      const id = $<HTMLSelectElement>("#meeting").value;
-      if (!id) return;
-      const b = $<HTMLButtonElement>("#classify");
+type Task = { text: string; owner: string; due: string; done: boolean };
+type Term = {
+  name: string;
+  aliases: string[];
+  errors: string[];
+  enabled: boolean;
+};
+const input = (id: string, label: string) =>
+  `<label class="field">${label}<input class="input" id="${id}"></label>`;
+const button = (id: string, label: string) =>
+  `<button class="btn" id="${id}">${label}</button>`;
+function controls(root: HTMLElement) {
+  const el = <T extends HTMLElement = HTMLElement>(id: string) =>
+    root.querySelector<T>(`#${id}`)!;
+  const value = (id: string) => el<HTMLInputElement>(id).value;
+  const action = (id: string, run: () => Promise<void>) => {
+    el<HTMLButtonElement>(id).onclick = async () => {
+      const b = el<HTMLButtonElement>(id);
       b.disabled = true;
+      el("wbStatus").textContent = t("处理中…", "Working…");
       try {
-        const meta = await api<{ title: string; tags: string[] }>(
-          meetingPath(id, "/classify"),
-          { method: "POST" },
-        );
-        $("#wbStatus").textContent =
-          `已更新：${meta.title} · ${meta.tags.join("、")}`;
+        await run();
+        if (root.isConnected) el("wbStatus").textContent = t("已完成", "Done");
       } catch (e) {
-        report(e);
+        if (root.isConnected) el("wbStatus").textContent = String(e);
       } finally {
         b.disabled = false;
       }
     };
-    $("#loadNotes").onclick = async () => {
-      const id = $<HTMLSelectElement>("#meeting").value;
-      if (!id) return;
-      type Task = { text: string; owner: string; due: string; done: boolean };
-      try {
-        const data = await api<{
-          confirmed?: boolean;
-          tasks?: Task[];
-          insights?: Answer;
-        }>(meetingPath(id, "/workbench"));
-        let tasks = data.tasks ?? [];
-        $("#notes").innerHTML =
-          `<p>${esc(meetings.find((m) => m.id === id)?.title ?? id)}</p><label><input type="checkbox" id="confirmed" ${data.confirmed ? "checked" : ""}>已人工确认</label><div id="tasks"></div><button class="btn" id="extractTasks">从纪要提取待办</button><button class="btn" id="addTask">添加待办</button><button class="btn" id="saveNotes">保存</button><h3>AI 洞察</h3><button class="btn" id="insights">生成诊断、洞察与建议</button><div id="insightText"></div>`;
-        const showInsights = (a?: Answer) => {
-          $("#insightText").innerHTML = (a?.parts ?? [])
-            .map((p) => `<p style="white-space:pre-wrap">${esc(p.answer)}</p>`)
-            .join("");
-        };
-        showInsights(data.insights);
-        const drawTasks = () => {
-          $("#tasks").innerHTML = tasks
-            .map(
-              (t, i) =>
-                `<p data-task="${i}"><input data-field="done" type="checkbox" ${t.done ? "checked" : ""}><input data-field="text" placeholder="待办" value="${esc(t.text)}"><input data-field="owner" placeholder="负责人" value="${esc(t.owner)}"><input data-field="due" type="date" value="${esc(t.due)}"></p>`,
-            )
-            .join("");
-        };
-        const collect = () => {
-          $("#tasks")
-            .querySelectorAll<HTMLElement>("[data-task]")
-            .forEach((row) => {
-              const value = (f: string) =>
-                row.querySelector<HTMLInputElement>(`[data-field="${f}"]`)!;
-              tasks[Number(row.dataset.task)] = {
-                text: value("text").value,
-                owner: value("owner").value,
-                due: value("due").value,
-                done: value("done").checked,
-              };
-            });
-        };
-        drawTasks();
-        $("#extractTasks").onclick = async () => {
-          const b = $<HTMLButtonElement>("#extractTasks");
-          b.disabled = true;
-          try {
-            const result = await api<{ tasks: Task[] }>(
-              meetingPath(id, "/tasks/extract"),
-              { method: "POST" },
-            );
-            tasks = result.tasks;
-            drawTasks();
-          } catch (e) {
-            report(e);
-          } finally {
-            b.disabled = false;
-          }
-        };
-        $("#addTask").onclick = () => {
-          collect();
-          tasks.push({ text: "", owner: "", due: "", done: false });
-          drawTasks();
-        };
-        $("#saveNotes").onclick = async () => {
-          collect();
-          try {
-            await api(meetingPath(id, "/workbench"), {
-              method: "PUT",
-              json: {
-                tasks,
-                confirmed: $<HTMLInputElement>("#confirmed").checked,
-              },
-            });
-            $("#wbStatus").textContent = "已保存";
-          } catch (e) {
-            report(e);
-          }
-        };
-        $("#insights").onclick = async () => {
-          const b = $<HTMLButtonElement>("#insights");
-          b.disabled = true;
-          try {
-            const result = await api<{ insights: Answer }>(
-              meetingPath(id, "/insights"),
-              { method: "POST" },
-            );
-            showInsights(result.insights);
-          } catch (e) {
-            report(e);
-          } finally {
-            b.disabled = false;
-          }
-        };
-      } catch (e) {
-        report(e);
-      }
-    };
-    const report = (e: unknown) => {
-      $("#wbStatus").textContent = errorMessage(e);
-    };
-    let editing: number | null = null;
-    const draw = () => {
-      $("#terms").innerHTML = terms
+  };
+  return { el, value, action };
+}
+const status = '<p class="hint" id="wbStatus" role="status"></p>';
+function answers(a: Answer): string {
+  return a.parts
+    .map(
+      (p) =>
+        `<p style="white-space:pre-wrap">${esc(p.answer)}</p>${p.citations.map((c) => `<p><a href="#/m/${encodeURIComponent(c.meeting)}?t=${c.start_ms}">${esc(c.quote)}</a></p>`).join("")}`,
+    )
+    .join("<hr>");
+}
+export async function mountQuestions(
+  root: HTMLElement,
+  scope = "all",
+): Promise<void> {
+  root.classList.add("workbench");
+  root.innerHTML = `<h3>${t("会议问答", "Ask meetings")}</h3><p class="hint">${t("回答附原文引用，请结合录音核对。", "Answers include transcript citations. Check them against the recording.")}</p><textarea class="textarea" id="question" maxlength="4000" rows="3" aria-label="${t("问题", "Question")}" placeholder="${t("输入问题", "Ask a question")}"></textarea>${button("ask", t("提问", "Ask"))}${button("history", t("问答历史", "History"))}${status}<div id="answer"></div>`;
+  const { el, value, action } = controls(root);
+  action("ask", async () => {
+    const a = await api<Answer>("/api/workbench/ask", {
+      json: { scope, question: value("question") },
+    });
+    el("answer").innerHTML = answers(a);
+  });
+  action("history", async () => {
+    const rows =
+      await api<(Answer & { scope: string; question: string })[]>(
+        "/api/workbench/ask",
+      );
+    el("answer").innerHTML =
+      rows
+        .filter((r) => r.scope === scope)
+        .reverse()
         .map(
-          (t, i) =>
-            `<p><input type="checkbox" data-enable="${i}" ${t.enabled ? "checked" : ""}>${esc(t.name)} · ${esc(t.aliases.join("、"))}<button class="btn" data-edit="${i}">编辑</button><button class="btn" data-remove="${i}">移除</button></p>`,
+          (r) =>
+            `<details><summary>${esc(r.question)}</summary>${answers(r)}</details>`,
+        )
+        .join("") || t("暂无问答历史", "No questions yet");
+  });
+}
+export async function mountMeetingTools(
+  root: HTMLElement,
+  id: string,
+): Promise<void> {
+  root.classList.add("workbench");
+  root.innerHTML = status;
+  try {
+    const data = await api<{
+      tasks?: Task[];
+      confirmed?: boolean;
+      insights?: Answer;
+    }>(meetingPath(id, "/workbench"));
+    if (!root.isConnected) return;
+    root.innerHTML = `<h3>${t("待办与确认", "Tasks and review")}</h3><label><input type="checkbox" id="confirmed" ${data.confirmed ? "checked" : ""}> ${t("纪要已人工确认", "Minutes reviewed")}</label><div id="tasks"></div>${button("addTask", t("添加待办", "Add task"))}${button("saveTasks", t("保存", "Save"))}${button("extract", t("从纪要提取待办", "Extract tasks"))}<h3>${t("洞察与建议", "Insights and suggestions")}</h3><div id="insightsText">${data.insights ? answers(data.insights) : ""}</div>${button("insights", t("生成洞察", "Generate insights"))}${button("classify", t("生成标题与分类", "Generate title and tags"))}<details><summary>${t("纠正转写", "Correct transcript")}</summary><p class="hint">${t("保留最初转写，同步更新纪要和待办中的文字。", "Keeps the original transcript and updates matching text in minutes and tasks.")}</p>${input("original", t("错误写法", "Incorrect text"))}${input("replacement", t("正确写法", "Replacement"))}${button("correct", t("纠正", "Correct"))}${button("originalView", t("查看最初原文", "View original transcript"))}<div id="originalText"></div></details>${status}<div id="meetingQuestions"></div>`;
+    const { el, value, action } = controls(root);
+    let tasks = data.tasks ?? [];
+    const draw = () => {
+      el("tasks").innerHTML = tasks
+        .map(
+          (x, i) =>
+            `<div class="task-row" data-task="${i}"><input type="checkbox" data-field="done" aria-label="${t("完成", "Done")}" ${x.done ? "checked" : ""}><input class="input" data-field="text" aria-label="${t("待办", "Task")}" value="${esc(x.text)}"><input class="input" data-field="owner" aria-label="${t("负责人", "Owner")}" placeholder="${t("负责人", "Owner")}" value="${esc(x.owner)}"><input class="input" type="date" data-field="due" aria-label="${t("截止日期", "Due date")}" value="${esc(x.due)}"></div>`,
         )
         .join("");
-      $("#terms")
+    };
+    const collect = () => {
+      tasks = Array.from(el("tasks").querySelectorAll("[data-task]")).map(
+        (row) => {
+          const f = (key: string) =>
+            row.querySelector<HTMLInputElement>(`[data-field="${key}"]`)!;
+          return {
+            text: f("text").value,
+            owner: f("owner").value,
+            due: f("due").value,
+            done: f("done").checked,
+          };
+        },
+      );
+    };
+    const save = async () => {
+      collect();
+      await api(meetingPath(id, "/workbench"), {
+        method: "PUT",
+        json: { tasks, confirmed: el<HTMLInputElement>("confirmed").checked },
+      });
+    };
+    draw();
+    el("addTask").onclick = () => {
+      collect();
+      tasks.push({ text: "", owner: "", due: "", done: false });
+      draw();
+    };
+    action("saveTasks", save);
+    action("extract", async () => {
+      await save();
+      const r = await api<{ tasks: Task[] }>(
+        meetingPath(id, "/tasks/extract"),
+        { method: "POST" },
+      );
+      tasks = r.tasks;
+      draw();
+    });
+    action("insights", async () => {
+      const r = await api<{ insights: Answer }>(meetingPath(id, "/insights"), {
+        method: "POST",
+      });
+      el("insightsText").innerHTML = answers(r.insights);
+    });
+    action("classify", async () => {
+      await api(meetingPath(id, "/classify"), { method: "POST" });
+      location.hash = `#/m/${encodeURIComponent(id)}`;
+      location.reload();
+    });
+    action("correct", async () => {
+      await save();
+      await api(meetingPath(id, "/correct"), {
+        json: {
+          original: value("original"),
+          replacement: value("replacement"),
+        },
+      });
+      const r = await api<{ tasks: Task[] }>(meetingPath(id, "/workbench"));
+      tasks = r.tasks ?? [];
+      draw();
+    });
+    action("originalView", async () => {
+      const r = await api<{ sentences: { text: string }[] }>(
+        meetingPath(id, "/original"),
+      );
+      el("originalText").innerHTML =
+        `<pre style="white-space:pre-wrap">${esc(r.sentences.map((s) => s.text).join("\n"))}</pre>`;
+    });
+    await mountQuestions(el("meetingQuestions"), id);
+  } catch (e) {
+    root.textContent = String(e);
+  }
+}
+export async function mountGlossary(root: HTMLElement): Promise<void> {
+  root.classList.add("workbench");
+  root.innerHTML = status;
+  try {
+    let terms = await api<Term[]>("/api/glossary");
+    if (!root.isConnected) return;
+    root.innerHTML = `<h3>${t("名词与纠错", "Names and corrections")}</h3><p class="hint">${t("正式名称、真实称呼作为识别热词。错误写法单独记录，不将真实称呼误当错字。", "Names and aliases are recognition hotwords. Misheard forms are kept separately from genuine aliases.")}</p><div id="terms"></div>${input("name", t("正式名称", "Name"))}${input("aliases", t("真实称呼（逗号分隔）", "Aliases (comma separated)"))}${input("errors", t("错误写法（逗号分隔）", "Misheard forms (comma separated)"))}${button("saveTerm", t("保存词条", "Save term"))}${status}`;
+    const { el, value, action } = controls(root);
+    let editing: number | null = null;
+    const persist = async (next: Term[]) => {
+      terms = await api<Term[]>("/api/glossary", { method: "PUT", json: next });
+      draw();
+    };
+    const draw = () => {
+      el("terms").innerHTML = terms
+        .map(
+          (x, i) =>
+            `<div class="st-row"><label><input data-enable="${i}" type="checkbox" ${x.enabled ? "checked" : ""}> ${esc(x.name)} <small>${esc(x.aliases.join(", "))}</small></label><span><button class="btn" data-edit="${i}">${t("编辑", "Edit")}</button><button class="btn" data-remove="${i}">${t("移除", "Remove")}</button></span></div>`,
+        )
+        .join("");
+      el("terms")
         .querySelectorAll<HTMLButtonElement>("[data-edit]")
         .forEach(
-          (el) =>
-            (el.onclick = () => {
-              editing = Number(el.dataset.edit);
-              const term = terms[editing];
-              $<HTMLInputElement>("#name").value = term.name;
-              $<HTMLInputElement>("#aliases").value = term.aliases.join("、");
-              $<HTMLInputElement>("#errors").value = term.errors.join("、");
-              $("#add").textContent = "保存词条";
+          (b) =>
+            (b.onclick = () => {
+              editing = Number(b.dataset.edit);
+              const x = terms[editing];
+              el<HTMLInputElement>("name").value = x.name;
+              el<HTMLInputElement>("aliases").value = x.aliases.join(", ");
+              el<HTMLInputElement>("errors").value = x.errors.join(", ");
             }),
         );
-      $("#terms")
-        .querySelectorAll<HTMLInputElement>("[data-enable]")
+      el("terms")
+        .querySelectorAll<HTMLButtonElement>("[data-remove]")
         .forEach(
-          (el) =>
-            (el.onchange = async () => {
-              const next = structuredClone(terms);
-              next[Number(el.dataset.enable)].enabled = el.checked;
+          (b) =>
+            (b.onclick = async () => {
               try {
-                terms = await api<Term[]>("/api/glossary", {
-                  method: "PUT",
-                  json: next,
-                });
-                draw();
+                await persist(
+                  terms.filter((_, i) => i !== Number(b.dataset.remove)),
+                );
+                editing = null;
               } catch (e) {
-                report(e);
-                draw();
+                el("wbStatus").textContent = String(e);
               }
             }),
         );
-      $("#terms")
-        .querySelectorAll<HTMLButtonElement>("[data-remove]")
+      el("terms")
+        .querySelectorAll<HTMLInputElement>("[data-enable]")
         .forEach(
-          (el) =>
-            (el.onclick = async () => {
+          (b) =>
+            (b.onchange = async () => {
+              const next = structuredClone(terms);
+              next[Number(b.dataset.enable)].enabled = b.checked;
               try {
-                terms = await api<Term[]>("/api/glossary", {
-                  method: "PUT",
-                  json: terms.filter((_, i) => i !== Number(el.dataset.remove)),
-                });
-                draw();
+                await persist(next);
               } catch (e) {
-                report(e);
+                el("wbStatus").textContent = String(e);
+                draw();
               }
             }),
         );
     };
     draw();
-    $("#add").onclick = async () => {
+    action("saveTerm", async () => {
       const split = (id: string) =>
-        $<HTMLInputElement>(id)
-          .value.split(/[,，、]/)
+        value(id)
+          .split(/[,，、]/)
           .map((s) => s.trim())
           .filter(Boolean);
-      try {
-        terms = await api<Term[]>("/api/glossary", {
-          method: "PUT",
-          json: [
-            ...terms.filter((_, i) => i !== editing),
-            {
-              name: $<HTMLInputElement>("#name").value.trim(),
-              aliases: split("#aliases"),
-              errors: split("#errors"),
-              enabled: true,
-            },
-          ],
-        });
-        editing = null;
-        $("#add").textContent = "添加";
-        draw();
-      } catch (e) {
-        report(e);
-      }
-    };
-    $("#correct").onclick = async () => {
-      try {
-        await api(
-          meetingPath($<HTMLSelectElement>("#meeting").value, "/correct"),
-          {
-            method: "POST",
-            json: {
-              original: $<HTMLInputElement>("#original").value,
-              replacement: $<HTMLInputElement>("#replacement").value,
-            },
-          },
-        );
-        $("#wbStatus").textContent = "原文已纠正，最初转写已保留";
-      } catch (e) {
-        report(e);
-      }
-    };
-    $("#history").onclick = async () => {
-      try {
-        const records =
-          await api<(Answer & { question: string; scope: string })[]>(
-            "/api/workbench/ask",
-          );
-        const scope = $<HTMLSelectElement>("#scope").value;
-        $("#answer").innerHTML =
-          records
-            .filter((r) => r.scope === scope)
-            .reverse()
-            .map(
-              (r) =>
-                `<details><summary>${esc(r.question)}</summary>${r.parts.map((p) => `<p style="white-space:pre-wrap">${esc(p.answer)}</p>${p.citations.map((c) => `<p><a href="#/m/${encodeURIComponent(c.meeting)}?t=${c.start_ms}">${esc(c.quote)}</a></p>`).join("")}`).join("")}</details>`,
-            )
-            .join("") || "暂无问答历史";
-      } catch (e) {
-        report(e);
-      }
-    };
-    $("#originalView").onclick = async () => {
-      try {
-        const tr = await api<{ sentences: { text: string }[] }>(
-          meetingPath($<HTMLSelectElement>("#meeting").value, "/original"),
-        );
-        $("#originalText").innerHTML =
-          `<pre style="white-space:pre-wrap">${esc(tr.sentences.map((x) => x.text).join("\n"))}</pre>`;
-      } catch (e) {
-        report(e);
-      }
-    };
-    $("#ask").onclick = async () => {
-      const button = $<HTMLButtonElement>("#ask");
-      button.disabled = true;
-      $("#answer").textContent = "正在检索…";
-      try {
-        const a = await api<Answer>("/api/workbench/ask", {
-          method: "POST",
-          json: {
-            scope: $<HTMLSelectElement>("#scope").value,
-            question: $<HTMLTextAreaElement>("#question").value,
-          },
-        });
-        $("#answer").innerHTML =
-          `<p>已检查 ${a.sentences_reviewed} 段原文</p>` +
-          a.parts
-            .map(
-              (p) =>
-                `<p style="white-space:pre-wrap">${esc(p.answer)}</p>` +
-                p.citations
-                  .map(
-                    (c) =>
-                      `<p><a href="#/m/${encodeURIComponent(c.meeting)}?t=${c.start_ms}">${esc(c.quote)}</a></p>`,
-                  )
-                  .join(""),
-            )
-            .join("<hr>");
-      } catch (e) {
-        $("#answer").textContent = errorMessage(e);
-      } finally {
-        button.disabled = false;
-      }
-    };
+      const term = {
+        name: value("name").trim(),
+        aliases: split("aliases"),
+        errors: split("errors"),
+        enabled: editing === null ? true : terms[editing].enabled,
+      };
+      const next = [...terms];
+      if (editing === null) next.push(term);
+      else next[editing] = term;
+      await persist(next);
+      editing = null;
+      ["name", "aliases", "errors"].forEach(
+        (id) => (el<HTMLInputElement>(id).value = ""),
+      );
+    });
   } catch (e) {
-    $("#wbStatus").textContent = errorMessage(e);
+    root.textContent = String(e);
+  }
+}
+export async function mountInbox(root: HTMLElement): Promise<void> {
+  root.classList.add("workbench");
+  root.innerHTML = status;
+  try {
+    const inbox = await api<{ enabled: boolean; directories: string[] }>(
+      "/api/workbench/inbox",
+    );
+    if (!root.isConnected) return;
+    root.innerHTML = `<h2>${t("自动导入", "Automatic import")}</h2><p class="hint">${t("监视本机目录，文件稳定两分钟后自动导入。保留源文件；失败每五分钟重试，最多三次。", "Watch local folders and import files after two stable minutes. Originals are retained. Failures retry every five minutes, up to three attempts.")}</p><label><input type="checkbox" id="enabled" ${inbox.enabled ? "checked" : ""}> ${t("启用", "Enabled")}</label><label class="field">${t("监视目录（每行一个绝对路径）", "Watched folders (one absolute path per line)")}<textarea class="textarea" rows="4" id="directories">${esc(inbox.directories.join("\n"))}</textarea></label>${button("saveInbox", t("保存", "Save"))}${status}`;
+    const { el, value, action } = controls(root);
+    action("saveInbox", async () => {
+      await api("/api/workbench/inbox", {
+        method: "PUT",
+        json: {
+          enabled: el<HTMLInputElement>("enabled").checked,
+          directories: value("directories")
+            .split("\n")
+            .map((x) => x.trim())
+            .filter(Boolean),
+        },
+      });
+    });
+  } catch (e) {
+    root.textContent = String(e);
   }
 }

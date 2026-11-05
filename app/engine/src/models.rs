@@ -39,7 +39,7 @@ pub struct ModelInfo {
 
 pub fn catalog() -> [ModelInfo; 5] {
     [
-        ModelInfo { kind: AsrKind::QwenMlx, name: "Qwen3-ASR MLX", desc: "Apple Silicon 本地 MLX；需配置 TINGO_MLX_HELPER 与 TINGO_MLX_MODEL，共用 Tingo 声纹流程", size: 0 },
+        ModelInfo { kind: AsrKind::QwenMlx, name: "Qwen3-ASR MLX", desc: tr("Apple Silicon 本地识别，支持热词。使用已安装的 MLX 环境与模型；检查后可启用。", "Local recognition on Apple Silicon with hotwords. Uses an installed MLX environment and model; check setup before enabling."), size: 0 },
         ModelInfo { kind: AsrKind::AppleSpeech, name: "Apple Speech",
             desc: tr("macOS 26+ 系统本地识别；请明确选择中文或英文。系统管理语言模型，仍需基础声纹模型", "On-device system speech on macOS 26+. Select Chinese or English. Language assets are system-managed; shared speaker models are still needed"), size: 0 },
         ModelInfo {

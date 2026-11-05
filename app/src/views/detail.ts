@@ -1,3 +1,4 @@
+import { mountMeetingTools } from "./workbench";
 /* 会议详情：纪要 / 转写两个视图、回听播放器、说话人改名、编辑纪要、重新生成。 */
 
 import { api, type Job, type MeetingDetail, meetingPath, url } from "../api";
@@ -68,7 +69,7 @@ async function guessSpeakers(): Promise<void> {
 }
 
 let audioEl: HTMLAudioElement | null = null;
-let detailTab: "minutes" | "transcript" = "minutes";
+let detailTab: "minutes" | "transcript" | "analysis" = "minutes";
 
 export function stopAudio(): void {
   if (audioEl) {
@@ -139,7 +140,7 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
         d.has_transcript
           ? `
         <div class="tabs-row">
-          <div class="seg"><button data-tab="minutes">${t("纪要", "Minutes")}</button><button data-tab="transcript">${t("转写", "Transcript")}</button></div>
+          <div class="seg"><button data-tab="minutes">${t("纪要", "Minutes")}</button><button data-tab="transcript">${t("转写", "Transcript")}</button>${S.env?.workbench ? `<button data-tab="analysis">${t("待办与分析", "Tasks & insights")}</button>` : ""}</div>
           <span class="grow"></span>
           <button class="btn ghost" id="aHistory">${ICON.file}${t("历史版本", "Version history")}</button>
           <button class="btn ghost" id="aEdit" ${detailTab === "minutes" && d.minutes ? "" : "hidden"}>${ICON.edit}${t("编辑", "Edit")}</button>
@@ -233,6 +234,9 @@ function drawPane(): void {
   $$<HTMLButtonElement>(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === detailTab));
   const edit = $maybe("#aEdit");
   if (edit) edit.hidden = !(detailTab === "minutes" && d.minutes) || !!jobOf(d.id); // 生成中改了也会被新纪要覆盖
+  if (detailTab === "analysis") {
+    pane.className = "card"; void mountMeetingTools(pane, d.id); return;
+  }
   if (detailTab === "minutes") {
     pane.className = "card doc";
     pane.innerHTML = d.minutes
