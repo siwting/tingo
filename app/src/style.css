@@ -750,3 +750,9 @@ a.tag-chip.sm:hover { color: var(--blue); }
 .workbench .field { display:block; margin:12px 0; }
 .workbench details { margin:20px 0; }
 @media(max-width:760px) { .workbench .task-row { grid-template-columns:auto 1fr; } }
+
+.meeting-questions { display:block; margin: 0 0 24px; padding:16px 20px; background:var(--card, #fff); border:1px solid var(--line, #e4e5eb); border-radius:16px; }
+.meeting-questions > summary { cursor:pointer; font-weight:500; }
+.meeting-questions[open] > summary { margin-bottom:16px; }
+.meeting-questions + .m-tools { position:relative; margin-top:0; }
+.model-directory { overflow-wrap:anywhere; margin-bottom:20px; }

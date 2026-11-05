@@ -183,7 +183,7 @@ impl AppState {
         let kind = paths.active();
         let cfg = self.processing_config();
         // Fun-ASR-Nano 在加载时就要拿到热词；SenseVoice、Fun-ASR-Nano 加载时定下会议语言
-        let hot = if matches!(kind, AsrKind::FunAsrNano | AsrKind::QwenMlx) { cfg.hotwords } else { Vec::new() };
+        let hot = if matches!(kind, AsrKind::FunAsrNano | AsrKind::QwenMlx | AsrKind::QwenMlx17) { cfg.hotwords } else { Vec::new() };
         let lang = if kind.uses_language() { cfg.asr_language } else { String::new() };
         let current = || {
             self.engine
@@ -352,6 +352,8 @@ impl AppState {
 
     fn storage(&self) -> Value {
         let mut v = meetings::storage(&self.opt.root, |id| self.meeting_busy(id));
+        v["next_root"] = json!(meetings::configured_root(&self.opt.config_path).unwrap_or_else(|| self.opt.root.clone()));
+        v["root_overridden"] = json!(config::env_var("ROOT").is_some());
         v["models_bytes"] = meetings::size_of(&self.opt.models_dir).into();
         v["free_bytes"] = meetings::free_bytes(&self.opt.root).into();
         v
@@ -569,7 +571,8 @@ async fn env(State(s): State<Shared>) -> Json<Value> {
         "model_cached": s.model_paths().base_ready() && s.model_paths().asr_ready(s.model_paths().active()),
         "asr_model": models::catalog().iter().find(|m| m.kind == s.model_paths().active()).map(|m| m.name),
         "models_downloadable": true, // 桌面版：模型在界面里下载（Python 版首次转写时自动下载，没有这个字段）
-        "models_size_mb": models::total_size() / 1_000_000,
+        "models_size_mb": 1120,
+        "models_dir": s.opt.models_dir,
         "model_loaded": s.engine_loaded(),
         "llm_ready": llm_ready,
         "llm_model": if cfg.llm.api == "codex" && cfg.llm.model.is_empty() { "Codex CLI" } else if cfg.llm.api == "claude-cli" && cfg.llm.model.is_empty() { "Claude Code CLI" } else { &cfg.llm.model },
@@ -1794,13 +1797,17 @@ async fn list_asr_models(State(s): State<Shared>) -> Json<Value> {
         .map_err(|e| e.to_string()).and_then(|r| r);
     let list: Vec<Value> = models::catalog()
         .iter()
+        .filter(|m| m.kind.is_mlx() || m.kind == AsrKind::AppleSpeech || paths.asr_ready(m.kind))
         .map(|m| {
             let mut v = json!({
                 "id": m.kind.id(),
                 "name": m.name,
                 "desc": m.desc,
                 "size_mb": m.size / 1_000_000,
-                "ready": paths.asr_ready(m.kind),
+                "ready": paths.asr_ready(m.kind) && paths.base_ready(),
+                "mlx": m.kind.is_mlx(),
+                "path": if m.kind.is_mlx() { crate::mlx::model_dir(&s.opt.models_dir, m.kind) } else { paths.asr_dir(m.kind) },
+                "legacy": !m.kind.is_mlx() && m.kind != AsrKind::AppleSpeech,
                 "active": m.kind == active,
             });
             if m.kind == AsrKind::AppleSpeech {
@@ -1816,7 +1823,7 @@ async fn list_asr_models(State(s): State<Shared>) -> Json<Value> {
             v
         })
         .collect();
-    Json(json!({"active": active.id(), "base_ready": paths.base_ready(), "models": list}))
+    Json(json!({"active": active.id(), "base_ready": paths.base_ready(), "models": list, "directory": s.opt.models_dir}))
 }
 
 /// 会议语言选了英文时，提醒 Paraformer 只认中文
@@ -1831,8 +1838,8 @@ fn paraformer_warning() -> &'static str {
 async fn download_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Json<Job>> {
     let kind = model_kind(&id)?;
     let paths = s.model_paths();
-    if kind == AsrKind::QwenMlx && !crate::mlx::ready() {
-        return Err(bad(tr("未找到本机 MLX 环境或模型。请配置 TINGO_MLX_HELPER、TINGO_MLX_PYTHON 和 TINGO_MLX_MODEL 后重新启动 App。", "Local MLX setup was not found. Configure TINGO_MLX_HELPER, TINGO_MLX_PYTHON and TINGO_MLX_MODEL, then restart the app.")));
+    if !kind.is_mlx() && kind != AsrKind::AppleSpeech && !paths.asr_ready(kind) {
+        return Err(bad(tr("新下载使用 MLX 模型，请选择 Qwen3-ASR MLX。", "New downloads use MLX. Choose Qwen3-ASR MLX.")));
     }
     if kind != AsrKind::AppleSpeech && paths.base_ready() && paths.asr_ready(kind) {
         return Err(bad(tr("这个模型已经下载好了", "This model is already downloaded")));
@@ -1844,6 +1851,9 @@ async fn download_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -
         if kind == AsrKind::AppleSpeech {
             st.update(id, |j| j.stage = tr("正在检查／安装系统语音模型…", "Checking/installing system speech assets…").into());
             crate::apple_speech::run(&st.opt.recorder_bin, "speech-install", &st.config().asr_language, None)?;
+        }
+        if kind.is_mlx() {
+            crate::mlx::install(&st.opt.models_dir, kind, |stage| st.update(id, |j| j.stage = stage.into()))?;
         }
         models::ensure_model(&paths, kind, |done, total| {
             st.update(id, |j| {
@@ -1859,8 +1869,8 @@ async fn download_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -
 async fn use_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Json<Value>> {
     let kind = model_kind(&id)?;
     let paths = s.model_paths();
-    if !paths.asr_ready(kind) {
-        return Err(bad(tr("这个模型还没有下载", "This model isn't downloaded yet")));
+    if !paths.asr_ready(kind) || !paths.base_ready() {
+        return Err(bad(tr("请先下载模型及共用组件", "Download the model and shared components first")));
     }
     if kind == AsrKind::AppleSpeech {
         let bin = s.opt.recorder_bin.clone(); let lang = s.config().asr_language;
@@ -1892,20 +1902,7 @@ async fn delete_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> 
 }
 
 async fn download_models(State(s): State<Shared>) -> ApiResult<Json<Job>> {
-    if s.model_paths().ready() {
-        return Err(bad(tr("模型已经下载好了", "The models are already downloaded")));
-    }
-    let job = Job::new("models", "", "downloading");
-    s.start_job(job.clone())?;
-    spawn_job(&s, &job.id, |st, id| {
-        models::ensure(&st.model_paths(), |done, total| {
-            st.update(id, |j| {
-                j.stage = format!("{:.0} / {:.0} MB", done as f64 / 1e6, total as f64 / 1e6)
-            })
-        })?;
-        st.engine().map(|_| ())
-    });
-    Ok(Json(job))
+    download_model(State(s), UrlPath("qwen-mlx".into())).await
 }
 
 // ---------- 检查更新（桌面版） ----------
@@ -2022,6 +2019,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/meetings/{id}/audio", get(get_audio).delete(delete_audio))
         .route("/api/meetings/{id}/meta", put(put_meta))
         .route("/api/storage", get(get_storage))
+        .route("/api/storage/location", put(storage_location))
         .route("/api/storage/cleanup", post(post_cleanup))
         .route("/api/meetings/{id}/speakers", put(put_speakers))
         .route("/api/meetings/{id}/minutes", put(put_minutes))
@@ -2286,6 +2284,22 @@ mod tests {
         assert_eq!(v["models_bytes"], 123);
         assert!(v["free_bytes"].as_u64().is_some_and(|n| n > 0));
         assert_eq!(v["root"], json!(root));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn storage_location_preserves_old_library_and_rejects_invalid_changes() {
+        let (s, root, _) = test_state("location");
+        meeting(&root, "2026-10-01_0900_keep", &[("录音.m4a", 100)]);
+        let new_root = root.parent().unwrap().join("new-library");
+        assert!(storage_location(State(s.clone()), Json(json!({"root":"relative"}))).await.is_err());
+        let response = storage_location(State(s.clone()), Json(json!({"root":new_root}))).await.unwrap().0;
+        assert_eq!(response["restart_required"], true);
+        assert_eq!(meetings::configured_root(&s.opt.config_path), Some(new_root.canonicalize().unwrap()));
+        assert_eq!(s.opt.root, root);
+        assert!(root.join("2026-10-01_0900_keep/录音.m4a").exists());
+        mark_busy(&s, "2026-10-01_0900_keep");
+        assert!(storage_location(State(s.clone()), Json(json!({"root":root}))).await.is_err());
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 

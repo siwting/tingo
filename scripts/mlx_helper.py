@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional Qwen3-ASR MLX adapter. Configure TINGO_MLX_HELPER and TINGO_MLX_MODEL.
+"""Managed Qwen3-ASR MLX worker and explicit model downloader.
 Input/output is JSON, audio never leaves this process. No implicit model download.
 """
 import contextlib
@@ -33,9 +33,26 @@ def main():
                 raise ValueError('Invalid VAD range')
             audio = samples[round(start*rate):round(end*rate)]
             for chunk, offset in split_audio_into_chunks(audio, rate, chunk_duration=60):
-                result = model.generate(chunk, max_tokens=2048, language=None, verbose=False, hotwords=request.get('hotwords', []))
+                result = model.generate(chunk, max_tokens=2048, language={'zh':'Chinese','en':'English'}.get(request.get('language')), verbose=False, hotwords=request.get('hotwords', []))
                 spans.append({'start': float(start+offset), 'end': float(start+offset+len(chunk)/rate), 'text': result.text.strip()})
     json.dump(spans, sys.stdout, ensure_ascii=False)
 
+def download(repo, destination):
+    from huggingface_hub import snapshot_download
+    allowed = {'mlx-community/Qwen3-ASR-0.6B-8bit', 'mlx-community/Qwen3-ASR-1.7B-8bit'}
+    if repo not in allowed:
+        raise ValueError('Unsupported MLX repository')
+    dest = Path(destination)
+    snapshot_download(repo_id=repo, local_dir=dest, allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model'])
+    if not (dest / 'config.json').is_file() or not list(dest.glob('*.safetensors')):
+        raise ValueError('Incomplete MLX model')
+    marker = dest / 'tingo-complete.json'
+    temporary = marker.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'repository': repo}))
+    temporary.replace(marker)
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) == 4 and sys.argv[1] == '--download':
+        download(sys.argv[2], sys.argv[3])
+    else:
+        main()

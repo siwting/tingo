@@ -113,12 +113,18 @@ class NativeWorkbench(unittest.TestCase):
         self.assertEqual(self.request('/api/config')['api'],'codex')
         self.assertNotIn('袁夕华',self.request('/api/config')['hotwords'])
 
-    def test_066_qwen_missing_setup_is_not_a_download(self):
-        with self.assertRaises(urllib.error.HTTPError) as failure:
-            self.request('/api/models/qwen-mlx/download',{},'POST')
-        self.assertEqual(failure.exception.code,400)
-        self.assertFalse((self.root/'models').exists())
+    def test_066_mlx_catalog_and_directories(self):
+        catalog=self.request('/api/models')
+        models={m['id']:m for m in catalog['models']}
+        self.assertIn('qwen-mlx',models)
+        self.assertIn('qwen-mlx-1.7b',models)
+        self.assertNotIn('paraformer',models)
+        self.assertFalse(models['qwen-mlx']['ready'])
+        self.assertEqual(catalog['directory'],str(self.root/'models'))
         self.assertEqual(self.request('/api/env')['llm_model'],'Codex CLI')
+
+    def test_001_empty_inbox_defaults(self):
+        self.assertEqual(self.request('/api/workbench/inbox'),{'enabled':False,'directories':[]})
 
     def test_067_claude_cli_configuration(self):
         config=self.request('/api/config')

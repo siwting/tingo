@@ -24,18 +24,47 @@ interface Preset {
 
 // 本机中转（Magpie、CC Switch、Ollama）由服务端探测后补在前面；这里是远程服务
 const remotePresets = (): Preset[] => [
-  { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-chat" },
-  { id: "bailian", name: t("通义千问（百炼）", "Qwen (Bailian)"), base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
-  { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-chat",
+  },
+  {
+    id: "bailian",
+    name: t("通义千问（百炼）", "Qwen (Bailian)"),
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-plus",
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4.1-mini",
+  },
   { id: "cli", name: "CLI", base_url: "", model: "", api: "codex" },
-  { id: "claude", name: "Claude", base_url: "https://api.anthropic.com/v1", model: "claude-sonnet-5", api: "anthropic" },
-  { id: "gemini", name: "Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash" },
+  {
+    id: "claude",
+    name: "Claude",
+    base_url: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-5",
+    api: "anthropic",
+  },
+  {
+    id: "gemini",
+    name: "Gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-2.5-flash",
+  },
   { id: "custom", name: t("自定义", "Custom") },
 ];
 
 /* 模型选择：点开显示全部模型（按服务商分组），输入时过滤。不用 <datalist>：它按输入框现有内容过滤，
    框里已经有模型名时就只剩这一个选项，等于没法选。返回一个刷新函数，模型列表异步到达后调用。 */
-function bindModelPicker(getModels: () => string[], getRecommended: () => string): () => void {
+function bindModelPicker(
+  getModels: () => string[],
+  getRecommended: () => string,
+): () => void {
   const input = $<HTMLInputElement>("#sModel");
   const pop = $("#sModelPop");
   let filter = "";
@@ -58,7 +87,9 @@ function bindModelPicker(getModels: () => string[], getRecommended: () => string
       return;
     }
     const groups: Record<string, string[]> = {};
-    for (const m of items) (groups[m.includes("/") ? m.split("/")[0] : t("其他", "Other")] ||= []).push(m);
+    for (const m of items)
+      (groups[m.includes("/") ? m.split("/")[0] : t("其他", "Other")] ||=
+        []).push(m);
     let i = 0;
     pop.innerHTML = Object.entries(groups)
       .map(
@@ -66,13 +97,17 @@ function bindModelPicker(getModels: () => string[], getRecommended: () => string
       <div class="combo-group">${esc(g)}</div>
       ${ms
         .map(
-          (m) => `<div class="combo-item ${m === input.value ? "sel" : ""} ${i === active ? "act" : ""}" data-i="${i++}">
+          (
+            m,
+          ) => `<div class="combo-item ${m === input.value ? "sel" : ""} ${i === active ? "act" : ""}" data-i="${i++}">
         <span>${esc(m.includes("/") ? m.slice(g.length + 1) : m)}</span>${m === getRecommended() ? `<em>${t("推荐", "Recommended")}</em>` : ""}</div>`,
         )
         .join("")}`,
       )
       .join("");
-    ($maybe(".combo-item.act", pop) ?? $maybe(".combo-item.sel", pop))?.scrollIntoView({ block: "nearest" });
+    (
+      $maybe(".combo-item.act", pop) ?? $maybe(".combo-item.sel", pop)
+    )?.scrollIntoView({ block: "nearest" });
   };
   const open = () => {
     filter = "";
@@ -129,6 +164,9 @@ interface AsrModel {
   id: string;
   name: string;
   desc: string;
+  mlx?: boolean;
+  legacy?: boolean;
+  path?: string;
   size_mb: number;
   ready: boolean;
   active: boolean;
@@ -146,21 +184,29 @@ async function drawAsr(): Promise<void> {
   if (!box) return;
   let list: AsrModel[];
   try {
-    list = (await api<{ models: AsrModel[] }>("/api/models")).models;
+    const response = await api<{ models: AsrModel[]; directory: string }>(
+      "/api/models",
+    );
+    list = response.models;
+    $("#modelDirectory").textContent = response.directory;
   } catch {
     box.hidden = true;
     return;
   }
   const job = S.job;
-  const dlId = job?.kind === "models" && isBusy(job) ? job.meeting || "paraformer" : "";
+  const dlId =
+    job?.kind === "models" && isBusy(job) ? job.meeting || "qwen-mlx" : "";
   const action = (m: AsrModel) => {
-    if (m.system && m.available === false) return `<span class="asr-badge">${t("不可用", "Unavailable")}</span>`;
-    if (m.active && m.ready) return `<span class="asr-badge">${t("使用中", "In use")}</span>`;
+    if (m.system && m.available === false)
+      return `<span class="asr-badge">${t("不可用", "Unavailable")}</span>`;
+    if (m.active && m.ready)
+      return `<span class="asr-badge">${t("使用中", "In use")}</span>`;
     if (m.ready)
-      return `${m.id !== "paraformer" && m.id !== "qwen-mlx" && !m.system ? `<button class="btn ghost asr-del" data-del="${m.id}">${delArmed.has(m.id) ? t("确认删除", "Confirm") : t("删除", "Delete")}</button>` : ""}<button class="btn" data-use="${m.id}">${t("使用", "Use")}</button>`;
-    if (m.id === dlId) return `<div class="asr-prog"><div class="asr-bar"><i id="asrBar"></i></div><small id="asrText">${t("准备下载…", "Starting download…")}</small></div>`;
-    if (m.id === "qwen-mlx") return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${t("检查本地环境", "Check local setup")}</button>`;
-    if (m.system) return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${t("检查／安装", "Check / install")}</button>`;
+      return `${!m.mlx && m.id !== "paraformer" && !m.system ? `<button class="btn ghost asr-del" data-del="${m.id}">${delArmed.has(m.id) ? t("确认删除", "Confirm") : t("删除", "Delete")}</button>` : ""}<button class="btn" data-use="${m.id}">${t("使用", "Use")}</button>`;
+    if (m.id === dlId)
+      return `<div class="asr-prog"><div class="asr-bar"><i id="asrBar"></i></div><small id="asrText">${t("准备下载…", "Starting download…")}</small></div>`;
+    if (m.system)
+      return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${t("检查／安装", "Check / install")}</button>`;
     return `<button class="btn" data-dl="${m.id}" ${dlId ? "disabled" : ""}>${ICON.download}${t("下载", "Download")} · ${m.size_mb} MB</button>`;
   };
   box.hidden = false;
@@ -168,7 +214,7 @@ async function drawAsr(): Promise<void> {
     .map(
       (m) => `
       <div class="asr-row ${m.active ? "on" : ""}">
-        <div class="asr-main"><b>${esc(m.name)}</b>${m.id === "paraformer" ? `<em>${t("默认", "Default")}</em>` : ""}<small>${esc(m.desc)}</small>${m.warning ? `<small class="asr-warn">${esc(m.warning)}</small>` : ""}</div>
+        <div class="asr-main"><b>${esc(m.name)}</b>${m.legacy ? `<em>${t("已安装 · 兼容", "Installed · legacy")}</em>` : ""}<small>${esc(m.desc)}</small>${m.warning ? `<small class="asr-warn">${esc(m.warning)}</small>` : ""}</div>
         <div class="asr-act">${action(m)}</div>
       </div>`,
     )
@@ -185,9 +231,22 @@ async function drawAsr(): Promise<void> {
     }
     drawAsr();
   };
-  $$<HTMLButtonElement>("[data-dl]", box).forEach((b) => (b.onclick = () => act(`/api/models/${b.dataset.dl}/download`, { method: "POST" })));
+  $$<HTMLButtonElement>("[data-dl]", box).forEach(
+    (b) =>
+      (b.onclick = () =>
+        act(`/api/models/${b.dataset.dl}/download`, { method: "POST" })),
+  );
   $$<HTMLButtonElement>("[data-use]", box).forEach(
-    (b) => (b.onclick = () => act(`/api/models/${b.dataset.use}/use`, { method: "POST" }, t("已切换，下一次转写起生效", "Switched — takes effect from the next transcription"))),
+    (b) =>
+      (b.onclick = () =>
+        act(
+          `/api/models/${b.dataset.use}/use`,
+          { method: "POST" },
+          t(
+            "已切换，下一次转写起生效",
+            "Switched — takes effect from the next transcription",
+          ),
+        )),
   );
   $$<HTMLButtonElement>("[data-del]", box).forEach(
     (b) =>
@@ -210,7 +269,8 @@ function updateAsrProgress(job: Job): void {
   if (!bar) return;
   const m = /([\d.]+)\s*\/\s*([\d.]+)/.exec(job.stage ?? "");
   $("#asrText").textContent = job.stage || t("准备下载…", "Starting download…");
-  if (m) bar.style.width = `${Math.min(100, (Number(m[1]) / Number(m[2])) * 100).toFixed(1)}%`;
+  if (m)
+    bar.style.width = `${Math.min(100, (Number(m[1]) / Number(m[2])) * 100).toFixed(1)}%`;
 }
 
 /** 轮询到任务变化时调用：下载进度、下载完成/失败后刷新卡片 */
@@ -219,15 +279,29 @@ export function updateSettingsJob(job: Job, prev: Job): void {
   if (prev.state !== job.state) {
     if (job.state === "error")
       toast(
-        t(`模型下载没有完成：${job.error ?? ""}（已下载的部分会保留，重试时接着下）`, `Model download didn't finish: ${job.error ?? ""} (progress is kept; retrying resumes)`),
+        t(
+          `模型下载没有完成：${job.error ?? ""}（已下载的部分会保留，重试时接着下）`,
+          `Model download didn't finish: ${job.error ?? ""} (progress is kept; retrying resumes)`,
+        ),
         true,
       );
-    if (job.state === "done") toast(t("模型下载好了，已切换过去", "Model downloaded and switched on"));
+    if (job.state === "done")
+      toast(t("模型下载好了，已切换过去", "Model downloaded and switched on"));
     drawAsr();
   } else updateAsrProgress(job);
 }
 
-type Tab = "inbox" | "llm" | "asr" | "record" | "lang" | "hotwords" | "push" | "obsidian" | "storage" | "about";
+type Tab =
+  | "inbox"
+  | "llm"
+  | "asr"
+  | "record"
+  | "lang"
+  | "hotwords"
+  | "push"
+  | "obsidian"
+  | "storage"
+  | "about";
 
 interface Ctx {
   c: Config;
@@ -240,7 +314,15 @@ const tabs = (): { id: Tab; name: string; icon: keyof typeof ICON }[] => [
   { id: "llm", name: t("大模型", "LLM"), icon: "bot" },
   { id: "asr", name: t("识别模型", "Speech model"), icon: "mic" },
   { id: "record", name: t("录音", "Recording"), icon: "mic" },
-  ...(S.env?.workbench ? [{ id: "inbox" as const, name: t("自动导入", "Automatic import"), icon: "folder" as const }] : []),
+  ...(S.env?.workbench
+    ? [
+        {
+          id: "inbox" as const,
+          name: t("自动导入", "Automatic import"),
+          icon: "folder" as const,
+        },
+      ]
+    : []),
   { id: "lang", name: t("语言", "Language"), icon: "globe" },
   { id: "hotwords", name: t("热词", "Hotwords"), icon: "spark" },
   { id: "push", name: t("推送到群", "Share to chat"), icon: "send" },
@@ -267,26 +349,39 @@ const platformOf = (url: string) =>
 function subtitle(tab: Tab, x: Ctx): string {
   const c = x.c;
   switch (tab) {
-    case "inbox": return t("本机监视目录", "Watched folders");
+    case "inbox":
+      return t("本机监视目录", "Watched folders");
     case "llm":
-      return c.api === "claude-cli" ? "Claude Code CLI" : c.api === "codex" ? "Codex CLI" : c.model || t("未设置", "Not set");
+      return c.api === "claude-cli"
+        ? "Claude Code CLI"
+        : c.api === "codex"
+          ? "Codex CLI"
+          : c.model || t("未设置", "Not set");
     case "asr":
       return S.env?.asr_model ?? "Paraformer-large";
     case "hotwords":
-      return c.hotwords.length ? t(`${c.hotwords.length} 个`, `${c.hotwords.length} words`) : t("未添加", "None");
+      return c.hotwords.length
+        ? t(`${c.hotwords.length} 个`, `${c.hotwords.length} words`)
+        : t("热词与名词库", "Words and glossary");
     case "push":
       return c.webhook ? platformOf(c.webhook) : t("未设置", "Not set");
     case "obsidian":
       return c.obsidian.vault
-        ? c.obsidian.vault.split("/").filter(Boolean).pop() + (c.obsidian.auto ? t(" · 自动存", " · auto") : "")
+        ? c.obsidian.vault.split("/").filter(Boolean).pop() +
+            (c.obsidian.auto ? t(" · 自动存", " · auto") : "")
         : t("未设置", "Not set");
     case "storage":
       return S.meetings.length
-        ? t(`${S.meetings.length} 场 · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`, `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"} · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`)
+        ? t(
+            `${S.meetings.length} 场 · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`,
+            `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"} · ${fmtBytes(S.meetings.reduce((n, m) => n + (m.size_bytes ?? 0), 0))}`,
+          )
         : t("还没有会议", "No meetings yet");
     case "record": {
       const n = c.auto_stop_silence_min ?? 10;
-      return n ? t(`${n} 分钟没声音自动结束`, `Auto-stop after ${n} min of silence`) : t("手动结束", "Stop manually");
+      return n
+        ? t(`${n} 分钟没声音自动结束`, `Auto-stop after ${n} min of silence`)
+        : t("手动结束", "Stop manually");
     }
     case "lang": {
       const ui = LANG_NAMES[c.ui_language ?? "auto"] ?? LANG_NAMES.auto;
@@ -298,7 +393,11 @@ function subtitle(tab: Tab, x: Ctx): string {
 }
 
 /** 保存：接口要完整的配置，没改的项照原样带上（API Key、加签密钥传 null 表示不改） */
-async function save(x: Ctx, patch: Record<string, unknown>, tab: Tab): Promise<void> {
+async function save(
+  x: Ctx,
+  patch: Record<string, unknown>,
+  tab: Tab,
+): Promise<void> {
   const c = x.c;
   try {
     await api<Config>("/api/config", {
@@ -327,18 +426,23 @@ async function save(x: Ctx, patch: Record<string, unknown>, tab: Tab): Promise<v
   }
 }
 
-const panelFoot = (extra = "") => `<div class="panel-foot">${extra}<span class="grow"></span><button class="btn primary" id="sSave">${t("保存", "Save")}</button></div>`;
+const panelFoot = (extra = "") =>
+  `<div class="panel-foot">${extra}<span class="grow"></span><button class="btn primary" id="sSave">${t("保存", "Save")}</button></div>`;
 
 export async function renderSettings(tab: string = "llm"): Promise<void> {
   main().innerHTML = `<div class="page"><div class="page-head"><div><h1>${t("设置", "Settings")}</h1><div class="sub">${t("保存在本机配置文件里", "Stored in a local config file")}</div></div><span class="grow"></span>${
-    onboarded() ? "" : `<a class="btn" href="#/welcome/llm">${t("回到新手引导", "Back to the tour")} ${ICON.chevron}</a>`
+    onboarded()
+      ? ""
+      : `<a class="btn" href="#/welcome/llm">${t("回到新手引导", "Back to the tour")} ${ICON.chevron}</a>`
   }</div><div id="sBody"></div></div>`;
   let x: Ctx;
   try {
     const [c, local, vaults, hasAsr] = await Promise.all([
       api<Config>("/api/config"),
       api<LocalProvider[]>("/api/llm/providers").catch(() => []),
-      api<{ name: string; path: string }[]>("/api/obsidian/vaults").catch(() => []),
+      api<{ name: string; path: string }[]>("/api/obsidian/vaults").catch(
+        () => [],
+      ),
       api("/api/models").then(
         () => true,
         () => false, // Python 版没有可切换的识别模型
@@ -358,7 +462,8 @@ export async function renderSettings(tab: string = "llm"): Promise<void> {
       <nav class="set-nav">
         ${list
           .map(
-            (tb) => `<a href="#/settings/${tb.id}" class="${tb.id === cur ? "on" : ""}"><span class="set-ico">${ICON[tb.icon]}</span><span class="set-txt"><b>${tb.name}</b><small>${esc(subtitle(tb.id, x))}</small></span></a>`,
+            (tb) =>
+              `<a href="#/settings/${tb.id}" class="${tb.id === cur ? "on" : ""}"><span class="set-ico">${ICON[tb.icon]}</span><span class="set-txt"><b>${tb.name}</b><small>${esc(subtitle(tb.id, x))}</small></span></a>`,
           )
           .join("")}
       </nav>
@@ -381,16 +486,27 @@ const PANELS: Record<Tab, (x: Ctx) => void | Promise<void>> = {
 };
 
 /** 三选一的分段按钮 */
-function segChoice(id: string, value: string, options: [string, string, string][]): string {
+function segChoice(
+  id: string,
+  value: string,
+  options: [string, string, string][],
+): string {
   return `<div class="seg fit" id="${id}">${options
-    .map(([v, zh, en]) => `<button data-v="${v}" class="${v === value ? "on" : ""}">${t(zh, en)}</button>`)
+    .map(
+      ([v, zh, en]) =>
+        `<button data-v="${v}" class="${v === value ? "on" : ""}">${t(zh, en)}</button>`,
+    )
     .join("")}</div>`;
 }
 
 function bindSeg(id: string): () => string {
   const box = $(`#${id}`);
   $$<HTMLButtonElement>("button", box).forEach(
-    (b) => (b.onclick = () => $$<HTMLButtonElement>("button", box).forEach((x) => x.classList.toggle("on", x === b))),
+    (b) =>
+      (b.onclick = () =>
+        $$<HTMLButtonElement>("button", box).forEach((x) =>
+          x.classList.toggle("on", x === b),
+        )),
   );
   return () => $<HTMLButtonElement>("button.on", box).dataset.v ?? "";
 }
@@ -399,9 +515,10 @@ function panelAsr(x: Ctx): void {
   $("#sPanel").id = "sAsr";
   $("#sAsr").innerHTML = `
     <h2>${t("识别模型", "Speech model")}</h2>
+    <p class="hint model-directory">${t("模型下载目录", "Model download directory")}: <code id="modelDirectory"></code></p>
     <p class="hint">${t(
-      "把录音变成文字的模型，都在本机运行，录音不会上传。默认的 Paraformer 适合大多数中文会议；会上中英文混着说可以换 SenseVoice，要更准、想让热词在识别时就生效可以换 Fun-ASR-Nano。切换后从下一次转写起生效。",
-      "Turns audio into text, entirely on this Mac — audio is never uploaded. Paraformer (default) is best for Chinese; SenseVoice handles English and mixed-language meetings; Fun-ASR-Nano is the most accurate and applies your hotwords during recognition. Changes apply from the next transcription.",
+      "下载项均为 MLX 版本，在 Apple Silicon GPU 上本地识别，录音不会上传。首次下载会一并准备运行环境和共用的说话人/VAD 组件。已安装的旧模型仍可使用，Apple Speech 由系统管理。",
+      "Downloadable recognition models use MLX on the Apple Silicon GPU. Audio stays local. The first download also installs the runtime and shared speaker/VAD components. Installed legacy models remain usable; Apple Speech is system-managed.",
     )}</p>
     <div class="field" style="margin-bottom:14px"><label>${t("会议里说的语言", "Meeting language")}</label>
       ${segChoice("sAsrLang", x.c.asr_language ?? "zh", [
@@ -424,13 +541,22 @@ function panelAsr(x: Ctx): void {
 
 interface Storage {
   root: string;
+  next_root?: string;
+  root_overridden?: boolean;
   count: number;
   meetings_bytes: number;
   audio_bytes: number;
   leftover_bytes: number;
   models_bytes: number | null;
   free_bytes: number;
-  largest: { id: string; title: string; date: string; bytes: number; audio_bytes: number; archived: boolean }[];
+  largest: {
+    id: string;
+    title: string;
+    date: string;
+    bytes: number;
+    audio_bytes: number;
+    archived: boolean;
+  }[];
 }
 
 async function panelStorage(): Promise<void> {
@@ -458,6 +584,9 @@ async function panelStorage(): Promise<void> {
       ${st.models_bytes != null ? `<span><i class="c"></i>${t("识别模型", "Speech models")} <b>${fmtBytes(st.models_bytes)}</b></span>` : ""}
     </div>
 
+    <div class="field" style="margin-top:24px"><label for="storageRoot">${t("会议保存目录", "Meeting library location")}</label><input class="input" id="storageRoot" value="${esc(st.next_root ?? st.root)}" ${st.root_overridden || !S.env?.workbench ? "disabled" : ""}></div>
+    <p class="hint">${t("修改后重启 App 生效。现有会议仍保留在原目录，不自动移动；可以切回原目录查看。Web 服务也需重启。", "Restart the app after saving. Existing meetings stay in their original folder; switch back to view them. Restart the web service too.")}</p>
+    <button class="btn" id="storageSave" ${st.root_overridden || !S.env?.workbench ? "disabled" : ""}>${t("保存目录", "Save location")}</button><span class="hint" id="storageResult"></span>
     <h3 class="st-h">${t("清理", "Clean up")}</h3>
     <div class="st-row">
       <div><b>${t("残留文件", "Leftover files")}</b><small>${t("合成录音失败前留下的原始音轨、没下完的临时文件", "Raw tracks left behind when merging failed, unfinished temp files")}</small></div>
@@ -479,22 +608,51 @@ async function panelStorage(): Promise<void> {
       st.largest.length
         ? st.largest
             .map(
-              (m) => `<div class="st-item"><a href="#/m/${encodeURIComponent(m.id)}"><b>${esc(m.title)}</b>${m.archived ? `<span class="arch-badge">${t("已归档", "Archived")}</span>` : ""}<small>${esc(m.date)} · ${fmtBytes(m.bytes)}${m.audio_bytes ? t(`，录音 ${fmtBytes(m.audio_bytes)}`, `, audio ${fmtBytes(m.audio_bytes)}`) : ""}</small></a>
+              (
+                m,
+              ) => `<div class="st-item"><a href="#/m/${encodeURIComponent(m.id)}"><b>${esc(m.title)}</b>${m.archived ? `<span class="arch-badge">${t("已归档", "Archived")}</span>` : ""}<small>${esc(m.date)} · ${fmtBytes(m.bytes)}${m.audio_bytes ? t(`，录音 ${fmtBytes(m.audio_bytes)}`, `, audio ${fmtBytes(m.audio_bytes)}`) : ""}</small></a>
               ${m.audio_bytes ? `<button class="btn ghost" data-audio="${esc(m.id)}">${t("只删录音", "Delete audio")}</button>` : ""}</div>`,
             )
             .join("")
         : `<p class="hint">${t("还没有会议", "No meetings yet")}</p>`
     }</div>`;
+  $("#storageSave").onclick = async () => {
+    try {
+      await api("/api/storage/location", {
+        method: "PUT",
+        json: { root: $<HTMLInputElement>("#storageRoot").value.trim() },
+      });
+      $("#storageResult").textContent = t(
+        "已保存，请重启 App。原目录中的会议保持不变。",
+        "Saved. Restart the app. Meetings in the old folder are unchanged.",
+      );
+    } catch (e) {
+      $("#storageResult").textContent = errorMessage(e);
+    }
+  };
   const days = bindSeg("stDays");
   $("#stArch").onclick = () => $("#stArch").classList.toggle("on");
   const run = async (body: unknown, what: string) => {
     try {
-      const r = await api<{ count: number; freed_bytes: number }>("/api/storage/cleanup", { json: body });
+      const r = await api<{ count: number; freed_bytes: number }>(
+        "/api/storage/cleanup",
+        { json: body },
+      );
       if (!r.count) {
-        toast(t("没有符合条件的会议，什么都没删", "Nothing matched — nothing was deleted"));
+        toast(
+          t(
+            "没有符合条件的会议，什么都没删",
+            "Nothing matched — nothing was deleted",
+          ),
+        );
         return;
       }
-      toast(t(`已把 ${r.count} ${what}移到废纸篓，腾出 ${fmtBytes(r.freed_bytes)}`, `Moved ${r.count} to the Trash — freed ${fmtBytes(r.freed_bytes)}`));
+      toast(
+        t(
+          `已把 ${r.count} ${what}移到废纸篓，腾出 ${fmtBytes(r.freed_bytes)}`,
+          `Moved ${r.count} to the Trash — freed ${fmtBytes(r.freed_bytes)}`,
+        ),
+      );
       await refreshMeetings();
       panelStorage();
     } catch (e) {
@@ -506,20 +664,44 @@ async function panelStorage(): Promise<void> {
     const n = Number(days());
     const archivedOnly = $("#stArch").classList.contains("on");
     const ok = await confirmBox(
-      t(`删除 ${n} 天前${archivedOnly ? "已归档" : ""}会议的录音？`, `Delete recordings of ${archivedOnly ? "archived " : ""}meetings older than ${n} days?`),
-      t("录音会移到废纸篓，转写和纪要保留，以后就不能回听这些会议了。", "Recordings move to the Trash; transcripts and minutes stay, but you can't play those meetings back."),
+      t(
+        `删除 ${n} 天前${archivedOnly ? "已归档" : ""}会议的录音？`,
+        `Delete recordings of ${archivedOnly ? "archived " : ""}meetings older than ${n} days?`,
+      ),
+      t(
+        "录音会移到废纸篓，转写和纪要保留，以后就不能回听这些会议了。",
+        "Recordings move to the Trash; transcripts and minutes stay, but you can't play those meetings back.",
+      ),
       t("删除录音", "Delete recordings"),
     );
-    if (ok) run({ what: "audio", older_than_days: n, archived_only: archivedOnly }, t("场会议的录音", ""));
+    if (ok)
+      run(
+        { what: "audio", older_than_days: n, archived_only: archivedOnly },
+        t("场会议的录音", ""),
+      );
   };
   $$<HTMLButtonElement>("[data-audio]", panel).forEach(
     (b) =>
       (b.onclick = async () => {
-        if (!(await confirmBox(t("删除这场会议的录音？", "Delete this meeting's recording?"), t("录音会移到废纸篓，转写和纪要保留。", "The recording moves to the Trash; transcript and minutes stay."), t("删除录音", "Delete recording"))))
+        if (
+          !(await confirmBox(
+            t("删除这场会议的录音？", "Delete this meeting's recording?"),
+            t(
+              "录音会移到废纸篓，转写和纪要保留。",
+              "The recording moves to the Trash; transcript and minutes stay.",
+            ),
+            t("删除录音", "Delete recording"),
+          ))
+        )
           return;
         try {
           const r = await deleteAudio(b.dataset.audio ?? "");
-          toast(t(`腾出 ${fmtBytes(r.freed_bytes)}`, `Freed ${fmtBytes(r.freed_bytes)}`));
+          toast(
+            t(
+              `腾出 ${fmtBytes(r.freed_bytes)}`,
+              `Freed ${fmtBytes(r.freed_bytes)}`,
+            ),
+          );
           await refreshMeetings();
           panelStorage();
         } catch (e) {
@@ -563,7 +745,14 @@ function panelRecord(x: Ctx): void {
   const silence = bindSeg("sSilence");
   $("#sAppQuit").onclick = () => $("#sAppQuit").classList.toggle("on");
   $("#sSave").onclick = () =>
-    save(x, { auto_stop_silence_min: Number(silence()), auto_stop_app_quit: $("#sAppQuit").classList.contains("on") }, "record");
+    save(
+      x,
+      {
+        auto_stop_silence_min: Number(silence()),
+        auto_stop_app_quit: $("#sAppQuit").classList.contains("on"),
+      },
+      "record",
+    );
 }
 
 function panelLang(x: Ctx): void {
@@ -593,16 +782,32 @@ function panelLang(x: Ctx): void {
     ${panelFoot()}`;
   const ui = bindSeg("sUiLang");
   const min = bindSeg("sMinLang");
-  $("#sSave").onclick = () => save(x, { ui_language: ui(), minutes_language: min() }, "lang");
+  $("#sSave").onclick = () =>
+    save(x, { ui_language: ui(), minutes_language: min() }, "lang");
 }
 
 function panelLlm(x: Ctx): void {
   const c = x.c;
-  const presets: Preset[] = [...x.local.map((p) => ({ id: p.id, name: p.name, base_url: p.base_url, local: p })), ...remotePresets()];
-  const norm = (u: string) => u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
+  const presets: Preset[] = [
+    ...x.local.map((p) => ({
+      id: p.id,
+      name: p.name,
+      base_url: p.base_url,
+      local: p,
+    })),
+    ...remotePresets(),
+  ];
+  const norm = (u: string) =>
+    u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
   const baseInput = () => $<HTMLInputElement>("#sBase");
   const presetOf = () =>
-    ["codex", "claude-cli"].includes(getApi()) ? "cli" : (presets.find((p) => p.base_url && norm(baseInput().value) === norm(p.base_url)) ?? presets[presets.length - 1]).id;
+    ["codex", "claude-cli"].includes(getApi())
+      ? "cli"
+      : (
+          presets.find(
+            (p) => p.base_url && norm(baseInput().value) === norm(p.base_url),
+          ) ?? presets[presets.length - 1]
+        ).id;
   const dot = (p: Preset) =>
     p.local
       ? `<span class="dot" style="background:${p.local.running ? "var(--green)" : "#c9ccd1"};display:inline-block;margin-right:6px;vertical-align:1px" title="${p.local.running ? t("运行中", "Running") : t("未启动", "Not running")}"></span>`
@@ -622,12 +827,30 @@ function panelLlm(x: Ctx): void {
     <div class="s-grid">
       <div class="prov-grid" id="sPreset">${presets.map((p) => `<button data-id="${p.id}" title="${esc(p.name)}">${dot(p)}<span>${esc(p.name)}</span></button>`).join("")}</div>
       <div class="field"><label id="sProtocolLabel">${t("接口协议", "API protocol")}</label>
-        ${segChoice("sApi", c.api === "claude-cli" ? "claude-cli" : c.api === "codex" ? "codex" : c.api === "anthropic" ? "anthropic" : "openai", [
-          ["openai", "OpenAI 兼容", "OpenAI-compatible"],
-          ["anthropic", "Anthropic（Claude）", "Anthropic (Claude)"],
-          ["claude-cli", "Claude Code CLI（使用现有登录）", "Claude Code CLI (existing login)"],
-          ["codex", "Codex CLI（使用现有登录）", "Codex CLI (existing login)"],
-        ])}</div>
+        ${segChoice(
+          "sApi",
+          c.api === "claude-cli"
+            ? "claude-cli"
+            : c.api === "codex"
+              ? "codex"
+              : c.api === "anthropic"
+                ? "anthropic"
+                : "openai",
+          [
+            ["openai", "OpenAI 兼容", "OpenAI-compatible"],
+            ["anthropic", "Anthropic（Claude）", "Anthropic (Claude)"],
+            [
+              "claude-cli",
+              "Claude Code CLI（使用现有登录）",
+              "Claude Code CLI (existing login)",
+            ],
+            [
+              "codex",
+              "Codex CLI（使用现有登录）",
+              "Codex CLI (existing login)",
+            ],
+          ],
+        )}</div>
       <div class="s-row2">
         <div class="field"><label>${t("接口地址 Base URL", "Base URL")}</label><input class="input" id="sBase" value="${esc(c.base_url)}"></div>
         <div class="field"><label>${t("模型", "Model")} <span id="sModelCount" style="color:var(--muted-2)"></span>
@@ -641,18 +864,34 @@ function panelLlm(x: Ctx): void {
   const model = $<HTMLInputElement>("#sModel");
   const key = $<HTMLInputElement>("#sKey");
   const getApi = bindSeg("sApi");
-  const setApi = (a: string) => $$<HTMLButtonElement>("#sApi button").forEach((b) => b.classList.toggle("on", b.dataset.v === a));
+  const setApi = (a: string) =>
+    $$<HTMLButtonElement>("#sApi button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.v === a),
+    );
   let lastCli = c.api === "claude-cli" ? "claude-cli" : "codex";
   const markPreset = () => {
     const codex = ["codex", "claude-cli"].includes(getApi());
     if (codex) lastCli = getApi();
-    $("#sProtocolLabel").textContent = codex ? t("命令行工具", "CLI provider") : t("接口协议", "API protocol");
-    $$<HTMLButtonElement>("#sApi button").forEach(b => b.hidden = ["codex", "claude-cli"].includes(b.dataset.v ?? "") !== codex);
-    $$<HTMLButtonElement>("#sPreset button").forEach((b) => b.classList.toggle("on", b.dataset.id === presetOf()));
+    $("#sProtocolLabel").textContent = codex
+      ? t("命令行工具", "CLI provider")
+      : t("接口协议", "API protocol");
+    $$<HTMLButtonElement>("#sApi button").forEach(
+      (b) =>
+        (b.hidden =
+          ["codex", "claude-cli"].includes(b.dataset.v ?? "") !== codex),
+    );
+    $$<HTMLButtonElement>("#sPreset button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.id === presetOf()),
+    );
     baseInput().closest<HTMLElement>(".field")!.hidden = codex;
     key.closest<HTMLElement>(".field")!.hidden = codex;
     $("#sFetch").hidden = codex;
-    model.placeholder = codex ? t("留空使用所选 CLI 的默认模型", "Leave blank for the selected CLI’s default model") : t("输入或选择模型", "Enter or select a model");
+    model.placeholder = codex
+      ? t(
+          "留空使用所选 CLI 的默认模型",
+          "Leave blank for the selected CLI’s default model",
+        )
+      : t("输入或选择模型", "Enter or select a model");
   };
   markPreset();
 
@@ -662,7 +901,9 @@ function panelLlm(x: Ctx): void {
   const setModels = (models: string[], rec = "") => {
     modelList = models;
     recommended = rec;
-    $("#sModelCount").textContent = models.length ? t(`（可选 ${models.length} 个）`, `(${models.length} available)`) : "";
+    $("#sModelCount").textContent = models.length
+      ? t(`（可选 ${models.length} 个）`, `(${models.length} available)`)
+      : "";
     refreshPicker();
   };
   refreshPicker = bindModelPicker(
@@ -683,17 +924,34 @@ function panelLlm(x: Ctx): void {
     }
     if (manual) msg(t("正在获取模型列表…", "Fetching models…"));
     try {
-      const r = await api<{ ok: boolean; models: string[] }>("/api/llm/models", {
-        json: { base_url: baseInput().value.trim(), model: "", api_key: key.value.trim() || null, api: getApi() },
-      });
+      const r = await api<{ ok: boolean; models: string[] }>(
+        "/api/llm/models",
+        {
+          json: {
+            base_url: baseInput().value.trim(),
+            model: "",
+            api_key: key.value.trim() || null,
+            api: getApi(),
+          },
+        },
+      );
       setModels(r.models);
       if (manual)
         msg(
           r.ok
             ? r.models.length
-              ? t(`找到 ${r.models.length} 个模型，点模型框选择`, `Found ${r.models.length} models — pick one in the model box`)
-              : t("这个接口没有返回模型列表，直接输入模型名即可", "This endpoint didn't return a model list — just type the model name")
-            : t("拿不到模型列表：检查接口地址、API Key 和接口协议", "Couldn't get the model list: check the URL, API key and protocol"),
+              ? t(
+                  `找到 ${r.models.length} 个模型，点模型框选择`,
+                  `Found ${r.models.length} models — pick one in the model box`,
+                )
+              : t(
+                  "这个接口没有返回模型列表，直接输入模型名即可",
+                  "This endpoint didn't return a model list — just type the model name",
+                )
+            : t(
+                "拿不到模型列表：检查接口地址、API Key 和接口协议",
+                "Couldn't get the model list: check the URL, API key and protocol",
+              ),
           r.ok ? "ok" : "bad",
         );
     } catch (e) {
@@ -706,7 +964,8 @@ function panelLlm(x: Ctx): void {
     fetchModels(true);
   };
   const current = presets.find((p) => p.id === presetOf());
-  if (current?.local) setModels(current.local.models, current.local.recommended);
+  if (current?.local)
+    setModels(current.local.models, current.local.recommended);
   else if (c.base_url) fetchModels(); // 打开设置页时就拉一次模型列表
 
   $$<HTMLButtonElement>("#sPreset button").forEach(
@@ -716,9 +975,18 @@ function panelLlm(x: Ctx): void {
         if (!p) return;
         msg("");
         if (p.id === "cli") {
-          setApi(lastCli); baseInput().value = ""; model.value = ""; key.value = "";
-          setModels([]); markPreset();
-          msg(t("使用所选 CLI 的已有登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。", "Uses the selected CLI’s existing login. No URL or API key required. Model is optional; Test checks CLI availability."));
+          setApi(lastCli);
+          baseInput().value = "";
+          model.value = "";
+          key.value = "";
+          setModels([]);
+          markPreset();
+          msg(
+            t(
+              "使用所选 CLI 的已有登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。",
+              "Uses the selected CLI’s existing login. No URL or API key required. Model is optional; Test checks CLI availability.",
+            ),
+          );
           return;
         }
         if (!p.base_url) {
@@ -730,7 +998,12 @@ function panelLlm(x: Ctx): void {
           setModels([]);
           markPreset();
           baseInput().focus();
-          msg(t("填接口地址（OpenAI 兼容的一般以 /v1 结尾）、选接口协议，再点「获取模型列表」", "Enter the base URL (OpenAI-compatible ones usually end in /v1), choose the protocol, then click Fetch models"));
+          msg(
+            t(
+              "填接口地址（OpenAI 兼容的一般以 /v1 结尾）、选接口协议，再点「获取模型列表」",
+              "Enter the base URL (OpenAI-compatible ones usually end in /v1), choose the protocol, then click Fetch models",
+            ),
+          );
           return;
         }
         baseInput().value = p.base_url;
@@ -740,15 +1013,30 @@ function panelLlm(x: Ctx): void {
           setModels(lp.models, lp.recommended);
           key.value = lp.api_key; // 本机中转的 key 是固定的，直接填上
           if (!lp.models.includes(model.value)) {
-            model.value = (lp.recommended && lp.models.includes(lp.recommended) && lp.recommended) || lp.models[0] || "";
+            model.value =
+              (lp.recommended &&
+                lp.models.includes(lp.recommended) &&
+                lp.recommended) ||
+              lp.models[0] ||
+              "";
           }
           if (!lp.running) msg(lp.hint, "bad");
-          else if (lp.recommended && model.value === lp.recommended) msg(t(`已选推荐模型 ${lp.recommended}：实测 76 分钟的会 51 秒出纪要`, `Recommended model selected: ${lp.recommended} (a 76-minute meeting took 51 s)`), "ok");
+          else if (lp.recommended && model.value === lp.recommended)
+            msg(
+              t(
+                `已选推荐模型 ${lp.recommended}：实测 76 分钟的会 51 秒出纪要`,
+                `Recommended model selected: ${lp.recommended} (a 76-minute meeting took 51 s)`,
+              ),
+              "ok",
+            );
         } else {
           setModels([]);
           key.value = "";
           model.value = p.model ?? "";
-          if (!c.api_key_set) msg(t("需要填写这家服务的 API Key", "This provider needs an API key"));
+          if (!c.api_key_set)
+            msg(
+              t("需要填写这家服务的 API Key", "This provider needs an API key"),
+            );
         }
         markPreset();
       }),
@@ -756,33 +1044,59 @@ function panelLlm(x: Ctx): void {
   baseInput().oninput = markPreset;
   baseInput().onchange = () => fetchModels();
   key.onchange = () => fetchModels(); // 填了 Key 才拿得到模型列表的服务（OpenAI、Claude 等），填完自动拉一次
-  $$<HTMLButtonElement>("#sApi button").forEach((b) => b.addEventListener("click", () => { markPreset(); fetchModels(); }));
+  $$<HTMLButtonElement>("#sApi button").forEach((b) =>
+    b.addEventListener("click", () => {
+      markPreset();
+      fetchModels();
+    }),
+  );
 
   $("#sTest").onclick = async () => {
     msg(t("连接中…", "Connecting…"));
     try {
-      const r = await api<{ ok: boolean; message: string }>("/api/config/test", {
-        json: { base_url: baseInput().value.trim(), model: model.value.trim(), api_key: key.value.trim() || null, api: getApi() },
-      });
+      const r = await api<{ ok: boolean; message: string }>(
+        "/api/config/test",
+        {
+          json: {
+            base_url: baseInput().value.trim(),
+            model: model.value.trim(),
+            api_key: key.value.trim() || null,
+            api: getApi(),
+          },
+        },
+      );
       msg(r.message, r.ok ? "ok" : "bad");
     } catch (e) {
       msg(errorMessage(e), "bad");
     }
   };
   $("#sSave").onclick = () =>
-    save(x, { base_url: baseInput().value.trim(), model: model.value.trim(), api_key: key.value.trim() || null, api: getApi() }, "llm");
+    save(
+      x,
+      {
+        base_url: baseInput().value.trim(),
+        model: model.value.trim(),
+        api_key: key.value.trim() || null,
+        api: getApi(),
+      },
+      "llm",
+    );
 }
 
 function panelHotwords(x: Ctx): void {
   const hot = [...x.c.hotwords];
-  const nano = ["Fun-ASR-Nano", "Qwen3-ASR MLX"].includes(S.env?.asr_model ?? "");
+  const nano =
+    S.env?.asr_model?.includes("MLX") || S.env?.asr_model === "Fun-ASR-Nano";
   $("#sPanel").innerHTML = `
     <h2>${t("热词", "Hotwords")}</h2>
     <p class="hint">${t("人名、项目代号、内部系统名、行业术语。每场会议都生效，录音时也可以给单场会议临时加几个。", "Names, project codes, internal systems, jargon. Applied to every meeting; you can add a few more per meeting when recording.")}</p>
     <div class="tags" id="sTags"><input id="sTagInput" placeholder="${t("输入后回车添加，可以一次粘贴多个（用逗号或空格隔开）", "Type and press Enter — paste several at once, separated by commas or spaces")}"></div>
     <div class="note-box">${
       nano
-        ? t("当前识别模型会在识别时直接用上这些词；生成纪要时也会交给大模型核对同音字。", "The selected model uses these words during recognition; they're also given to the LLM as a glossary when writing minutes.")
+        ? t(
+            "当前识别模型会在识别时直接用上这些词；生成纪要时也会交给大模型核对同音字。",
+            "The selected model uses these words during recognition; they're also given to the LLM as a glossary when writing minutes.",
+          )
         : t(
             "当前识别模型不支持热词，这些词会作为术语表交给大模型，在写纪要时纠正同音字（比如“历史中单”→“历史工单”）。想在识别时就用上，可以在「识别模型」里换成 Fun-ASR-Nano。",
             "The current speech model doesn't take hotwords, so they're given to the LLM as a glossary to fix misheard words in the minutes. To use them during recognition, switch to Fun-ASR-Nano under Speech model.",
@@ -790,7 +1104,10 @@ function panelHotwords(x: Ctx): void {
     }</div>
     ${panelFoot()}`;
   if (S.env?.workbench) {
-    $("#sPanel").insertAdjacentHTML("beforeend", '<div id="glossaryPanel"></div>');
+    $("#sPanel").insertAdjacentHTML(
+      "beforeend",
+      '<div id="glossaryPanel"></div>',
+    );
     void mountGlossary($("#glossaryPanel"));
   }
   const tagInput = $<HTMLInputElement>("#sTagInput");
@@ -809,7 +1126,8 @@ function panelHotwords(x: Ctx): void {
   };
   drawTags();
   const addPending = () => {
-    for (const w of tagInput.value.split(/[,，、\s]+/)) if (w && !hot.includes(w)) hot.push(w);
+    for (const w of tagInput.value.split(/[,，、\s]+/))
+      if (w && !hot.includes(w)) hot.push(w);
     tagInput.value = "";
   };
   tagInput.onkeydown = (e) => {
@@ -834,16 +1152,23 @@ function panelPush(x: Ctx): void {
   $("#sPanel").innerHTML = `
     <h2>${t("推送到群", "Share to chat")}</h2>
     <p class="hint">${t(
-      "在群里添加\"自定义机器人\"，把 webhook 地址贴过来，按域名自动识别飞书、钉钉或企业微信。会议详情页点「推送到群」就会发过去。",
+      '在群里添加"自定义机器人"，把 webhook 地址贴过来，按域名自动识别飞书、钉钉或企业微信。会议详情页点「推送到群」就会发过去。',
       "Add a custom bot to your group chat and paste its webhook URL — Feishu, DingTalk and WeCom are detected from the domain. Then click “Share to chat” on a meeting.",
     )}</p>
     <div class="s-grid">
       <div class="field"><label>${t("Webhook 地址", "Webhook URL")}</label><input class="input" id="sHook" value="${esc(c.webhook)}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"></div>
-      <div class="field"><label>${t("加签密钥（机器人开启了\"加签\"才需要）", "Signing secret (only if the bot has signing enabled)")}</label><input class="input" id="sSecret" type="password" autocomplete="off" placeholder="${c.secret_set ? t("已设置，留空表示不修改", "Saved — leave empty to keep it") : t("可选", "Optional")}"></div>
+      <div class="field"><label>${t('加签密钥（机器人开启了"加签"才需要）', "Signing secret (only if the bot has signing enabled)")}</label><input class="input" id="sSecret" type="password" autocomplete="off" placeholder="${c.secret_set ? t("已设置，留空表示不修改", "Saved — leave empty to keep it") : t("可选", "Optional")}"></div>
     </div>
     ${panelFoot()}`;
   $("#sSave").onclick = () =>
-    save(x, { webhook: $<HTMLInputElement>("#sHook").value.trim(), secret: $<HTMLInputElement>("#sSecret").value.trim() || null }, "push");
+    save(
+      x,
+      {
+        webhook: $<HTMLInputElement>("#sHook").value.trim(),
+        secret: $<HTMLInputElement>("#sSecret").value.trim() || null,
+      },
+      "push",
+    );
 }
 
 function panelObsidian(x: Ctx): void {
@@ -868,11 +1193,19 @@ function panelObsidian(x: Ctx): void {
     </div>
     ${panelFoot()}`;
   const vault = $<HTMLInputElement>("#sVault");
-  const markVault = () => $$<HTMLButtonElement>("#sVaults button").forEach((b) => b.classList.toggle("on", b.dataset.path === vault.value.trim()));
+  const markVault = () =>
+    $$<HTMLButtonElement>("#sVaults button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.path === vault.value.trim()),
+    );
   markVault();
-  $$<HTMLButtonElement>("#sVaults button").forEach((b) => (b.onclick = () => ((vault.value = b.dataset.path ?? ""), markVault())));
+  $$<HTMLButtonElement>("#sVaults button").forEach(
+    (b) =>
+      (b.onclick = () => ((vault.value = b.dataset.path ?? ""), markVault())),
+  );
   vault.oninput = markVault;
-  $$<HTMLButtonElement>("#sObAuto, #sObTr").forEach((b) => (b.onclick = () => b.classList.toggle("on")));
+  $$<HTMLButtonElement>("#sObAuto, #sObTr").forEach(
+    (b) => (b.onclick = () => b.classList.toggle("on")),
+  );
   $("#sSave").onclick = () =>
     save(
       x,
@@ -897,18 +1230,27 @@ function bindUpdateButton(): void {
     msg.textContent = t("检查中…", "Checking…");
     const u = await checkUpdate(true);
     if (!u) {
-      msg.textContent = t("这个版本不支持检查更新", "Update checks aren't available in this version");
+      msg.textContent = t(
+        "这个版本不支持检查更新",
+        "Update checks aren't available in this version",
+      );
     } else if (u.error) {
       msg.className = "test-msg bad";
       msg.textContent = t(`检查失败：${u.error}`, `Check failed: ${u.error}`);
     } else if (u.newer) {
       msg.className = "test-msg ok";
-      msg.textContent = t(`有新版本 ${u.latest}`, `Version ${u.latest} is available`);
+      msg.textContent = t(
+        `有新版本 ${u.latest}`,
+        `Version ${u.latest} is available`,
+      );
       refreshEnv();
       showUpdate();
     } else {
       msg.className = "test-msg ok";
-      msg.textContent = t(`已经是最新版本（${u.current}）`, `You're up to date (${u.current})`);
+      msg.textContent = t(
+        `已经是最新版本（${u.current}）`,
+        `You're up to date (${u.current})`,
+      );
     }
   };
 }
@@ -916,20 +1258,38 @@ function bindUpdateButton(): void {
 function panelAbout(x: Ctx): void {
   const env = S.env;
   const checks: [boolean, string, string][] = [
-    ...(env?.models_downloadable ? [] : ([[!!env?.ffmpeg, "ffmpeg", env?.ffmpeg ? t("已安装", "Installed") : "brew install ffmpeg"]] as [boolean, string, string][])),
+    ...(env?.models_downloadable
+      ? []
+      : ([
+          [
+            !!env?.ffmpeg,
+            "ffmpeg",
+            env?.ffmpeg ? t("已安装", "Installed") : "brew install ffmpeg",
+          ],
+        ] as [boolean, string, string][])),
     [
       !!env?.system_audio,
       t("录系统声音", "System audio"),
       env?.system_audio
-        ? t("可以录腾讯会议、飞书里对方的声音", "Can record the other side in Zoom, Teams, Tencent Meeting, Feishu…")
-        : t("需要 macOS 15+ 和 Xcode 命令行工具；不影响导入录音", "Needs macOS 15+ and Xcode Command Line Tools; importing recordings still works"),
+        ? t(
+            "可以录腾讯会议、飞书里对方的声音",
+            "Can record the other side in Zoom, Teams, Tencent Meeting, Feishu…",
+          )
+        : t(
+            "需要 macOS 15+ 和 Xcode 命令行工具；不影响导入录音",
+            "Needs macOS 15+ and Xcode Command Line Tools; importing recordings still works",
+          ),
     ],
     [
       !!env?.model_cached,
       t("识别模型", "Speech model"),
       `${env?.asr_model ?? ""}${env?.model_loaded ? t(" 已加载", " loaded") : env?.model_cached ? t(" 已下载", " downloaded") : t(" 未下载", " not downloaded")}`.trim(),
     ],
-    [!!env?.llm_ready, t("大模型", "LLM"), env?.llm_ready ? env.llm_model : t("还没有配置", "Not set up")],
+    [
+      !!env?.llm_ready,
+      t("大模型", "LLM"),
+      env?.llm_ready ? env.llm_model : t("还没有配置", "Not set up"),
+    ],
   ];
   $("#sPanel").innerHTML = `
     <h2>${t("运行环境", "About")}</h2>
@@ -950,5 +1310,6 @@ function panelAbout(x: Ctx): void {
             `<div class="check"><span class="dot" style="background:${ok ? "var(--green)" : "var(--amber)"}"></span>${name}<small>${esc(note)}</small></div>`,
         )
         .join("")}
-    </div>`;  bindUpdateButton();
+    </div>`;
+  bindUpdateButton();
 }

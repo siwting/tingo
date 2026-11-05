@@ -31,6 +31,7 @@ pub fn default_root() -> PathBuf {
     if let Some(p) = crate::config::env_var("ROOT") {
         return PathBuf::from(p);
     }
+    if let Some(root) = configured_root(&crate::config::default_path()) { return root; }
     let docs = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()
@@ -543,4 +544,10 @@ mod tests {
         assert!(free_bytes(&root.join("还没建/的目录")).is_some());
         std::fs::remove_dir_all(root).ok();
     }
+}
+
+pub fn configured_root(config: &Path) -> Option<PathBuf> {
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(config.with_file_name("library.json")).ok()?).ok()?;
+    let path = PathBuf::from(value["root"].as_str()?);
+    path.is_absolute().then_some(path)
 }

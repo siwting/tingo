@@ -1,13 +1,37 @@
 import { mountQuestions } from "./workbench";
 import { api, type MeetingSummary } from "../api";
 import { isEn, speakerName, t } from "../i18n";
-import { $, $$, $maybe, color, errorMessage, esc, fmt, ICON, initial, main, toast } from "../dom";
-import { allTags, batch, type BatchAction, confirmBox, editTags, fmtBytes } from "../manage";
+import {
+  $,
+  $$,
+  $maybe,
+  color,
+  errorMessage,
+  esc,
+  fmt,
+  ICON,
+  initial,
+  main,
+  toast,
+} from "../dom";
+import {
+  allTags,
+  batch,
+  type BatchAction,
+  confirmBox,
+  editTags,
+  fmtBytes,
+} from "../manage";
 import { refreshMeetings } from "../sidebar";
 import { S } from "../state";
 
 /* 列表状态：看全部还是已归档、按哪个标签筛、是否在多选 */
-const view = { archived: false, tag: "", selecting: false, selected: new Set<string>() };
+const view = {
+  archived: false,
+  tag: "",
+  selecting: false,
+  selected: new Set<string>(),
+};
 
 export function renderMeetings(): void {
   view.selecting = false;
@@ -19,7 +43,7 @@ export function renderMeetings(): void {
         <span class="grow"></span>
         <label class="search">${ICON.search}<input class="input" id="mSearch" placeholder="${t("搜索会议里说过的话", "Search everything that was said")}"></label>
       </div>
-      ${S.env?.workbench ? `<details class="card"><summary>${t("跨会议问答", "Ask across meetings")}</summary><div id="allQuestions"></div></details>` : ""}<div class="m-tools" id="mTools"></div>
+      ${S.env?.workbench ? `<details class="meeting-questions"><summary>${t("跨会议问答", "Ask across meetings")}</summary><div id="allQuestions"></div></details>` : ""}<div class="m-tools" id="mTools"></div>
       <div id="mList"></div>
       <div class="batch-bar" id="mBatch" hidden></div>
     </div>`;
@@ -47,7 +71,10 @@ function drawTools(): void {
       <button data-v="archived" class="${view.archived ? "on" : ""}">${t("已归档", "Archived")}${archivedCount ? ` ${archivedCount}` : ""}</button>
     </div>
     <div class="m-tags">${tags
-      .map((x) => `<button class="tag-chip ${view.tag === x.tag ? "on" : ""}" data-t="${esc(x.tag)}">${esc(x.tag)}<small>${x.count}</small></button>`)
+      .map(
+        (x) =>
+          `<button class="tag-chip ${view.tag === x.tag ? "on" : ""}" data-t="${esc(x.tag)}">${esc(x.tag)}<small>${x.count}</small></button>`,
+      )
       .join("")}</div>
     <span class="grow"></span>
     <button class="btn ${view.selecting ? "primary" : ""}" id="mSelect">${view.selecting ? t("完成", "Done") : t("选择", "Select")}</button>`;
@@ -80,7 +107,8 @@ export function showTag(tag: string): void {
   location.hash = "#/meetings";
 }
 
-const redraw = () => drawMeetings(($maybe<HTMLInputElement>("#mSearch")?.value ?? "").trim());
+const redraw = () =>
+  drawMeetings(($maybe<HTMLInputElement>("#mSearch")?.value ?? "").trim());
 
 function drawBatch(): void {
   const bar = $maybe("#mBatch");
@@ -95,7 +123,9 @@ function drawBatch(): void {
     <button class="btn" data-b="${view.archived ? "unarchive" : "archive"}" ${dis}>${view.archived ? t("取消归档", "Unarchive") : t("归档", "Archive")}</button>
     <button class="btn" data-b="delete_audio" ${dis}>${t("只删录音", "Delete recordings")}</button>
     <button class="btn danger" data-b="delete" ${dis}>${t("删除", "Delete")}</button>`;
-  $$<HTMLButtonElement>("button", bar).forEach((b) => (b.onclick = () => runBatch(b.dataset.b ?? "")));
+  $$<HTMLButtonElement>("button", bar).forEach(
+    (b) => (b.onclick = () => runBatch(b.dataset.b ?? "")),
+  );
 }
 
 async function runBatch(kind: string): Promise<void> {
@@ -104,30 +134,63 @@ async function runBatch(kind: string): Promise<void> {
   let action = kind as BatchAction;
   let tag: string | undefined;
   if (kind === "tag") {
-    const tags = await editTags([], t(`给 ${ids.length} 场会议加标签`, `Tag ${ids.length} meetings`));
+    const tags = await editTags(
+      [],
+      t(`给 ${ids.length} 场会议加标签`, `Tag ${ids.length} meetings`),
+    );
     if (!tags?.length) return;
     action = "tag_add";
     tag = tags[0];
-    for (const extra of tags.slice(1)) await batch(ids, "tag_add", extra).catch(() => {});
+    for (const extra of tags.slice(1))
+      await batch(ids, "tag_add", extra).catch(() => {});
   }
-  if (kind === "delete" && !(await confirmBox(t(`删除 ${ids.length} 场会议？`, `Delete ${ids.length} meetings?`), t("录音、转写和纪要都会移到废纸篓，需要的话可以从废纸篓恢复。", "Recordings, transcripts and minutes move to the Trash — you can restore them from there."), t("移到废纸篓", "Move to Trash"))))
+  if (
+    kind === "delete" &&
+    !(await confirmBox(
+      t(`删除 ${ids.length} 场会议？`, `Delete ${ids.length} meetings?`),
+      t(
+        "录音、转写和纪要都会移到废纸篓，需要的话可以从废纸篓恢复。",
+        "Recordings, transcripts and minutes move to the Trash — you can restore them from there.",
+      ),
+      t("移到废纸篓", "Move to Trash"),
+    ))
+  )
     return;
   if (
     kind === "delete_audio" &&
     !(await confirmBox(
-      t(`删除 ${ids.length} 场会议的录音？`, `Delete the recordings of ${ids.length} meetings?`),
-      t("只把录音移到废纸篓，转写和纪要都保留，以后就不能回听了。", "Only the recordings move to the Trash; transcripts and minutes stay, but you can't play them back."),
+      t(
+        `删除 ${ids.length} 场会议的录音？`,
+        `Delete the recordings of ${ids.length} meetings?`,
+      ),
+      t(
+        "只把录音移到废纸篓，转写和纪要都保留，以后就不能回听了。",
+        "Only the recordings move to the Trash; transcripts and minutes stay, but you can't play them back.",
+      ),
       t("删除录音", "Delete recordings"),
     ))
   )
     return;
   try {
     const r = await batch(ids, action, tag);
-    const freed = r.freed_bytes ? t(`，腾出 ${fmtBytes(r.freed_bytes)}`, `, freed ${fmtBytes(r.freed_bytes)}`) : "";
-    if (r.failed.length) toast(t(`${r.ok} 场完成，${r.failed.length} 场失败：${r.failed[0].error}`, `${r.ok} done, ${r.failed.length} failed: ${r.failed[0].error}`), true);
+    const freed = r.freed_bytes
+      ? t(
+          `，腾出 ${fmtBytes(r.freed_bytes)}`,
+          `, freed ${fmtBytes(r.freed_bytes)}`,
+        )
+      : "";
+    if (r.failed.length)
+      toast(
+        t(
+          `${r.ok} 场完成，${r.failed.length} 场失败：${r.failed[0].error}`,
+          `${r.ok} done, ${r.failed.length} failed: ${r.failed[0].error}`,
+        ),
+        true,
+      );
     else toast(t(`已处理 ${r.ok} 场${freed}`, `Done for ${r.ok}${freed}`));
     view.selected.clear();
-    if (kind === "delete" || kind === "archive" || kind === "unarchive") view.selecting = false;
+    if (kind === "delete" || kind === "archive" || kind === "unarchive")
+      view.selecting = false;
     await refreshMeetings();
     redraw();
   } catch (e) {
@@ -144,10 +207,23 @@ function drawMeetings(q: string): void {
     (m) =>
       !!m.archived === view.archived &&
       (!view.tag || (m.tags ?? []).includes(view.tag)) &&
-      (!q || (m.title + m.summary + m.speakers.join("") + (m.tags ?? []).join("")).includes(q)),
+      (!q ||
+        (
+          m.title +
+          m.summary +
+          m.speakers.join("") +
+          (m.tags ?? []).join("")
+        ).includes(q)),
   );
-  const root = S.env ? S.env.root.replace(/^\/Users\/[^/]+/, "~") : "~/Documents/tingo";
-  $("#mCount").textContent = S.meetings.length ? t(`共 ${S.meetings.length} 场，存放在 ${root}`, `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"}, stored in ${root}`) : "";
+  const root = S.env
+    ? S.env.root.replace(/^\/Users\/[^/]+/, "~")
+    : "~/Documents/tingo";
+  $("#mCount").textContent = S.meetings.length
+    ? t(
+        `共 ${S.meetings.length} 场，存放在 ${root}`,
+        `${S.meetings.length} meeting${S.meetings.length === 1 ? "" : "s"}, stored in ${root}`,
+      )
+    : "";
   if (!S.meetings.length) {
     box.innerHTML = `<div class="empty"><h3>${t("还没有会议", "No meetings yet")}</h3><div>${t("开一场会，或者把已有的录音拖进窗口", "Start a meeting, or drop an existing recording into the window")}</div><a class="btn primary" href="#/">${t("开始录音", "Start recording")}</a></div>`;
     return;
@@ -214,15 +290,21 @@ async function runSearch(q: string): Promise<void> {
   if (seq !== searchSeq || !box) return;
   const also = r.expanded.filter((x) => x.toLowerCase() !== q.toLowerCase());
   const head = `<div class="search-head">${t(`找到 ${r.results.length} 场会议`, `${r.results.length} meeting${r.results.length === 1 ? "" : "s"} found`)}${
-    also.length ? ` · ${t("也搜了", "also searched")} ${also.map((x) => `<b>${esc(x)}</b>`).join(t("、", ", "))}` : ""
+    also.length
+      ? ` · ${t("也搜了", "also searched")} ${also.map((x) => `<b>${esc(x)}</b>`).join(t("、", ", "))}`
+      : ""
   }</div>`;
   if (!r.results.length) {
-    box.innerHTML = head + `<div class="empty"><h3>${t("没有找到", "Nothing found")}</h3><div>${t("换个关键词试试", "Try another keyword")}</div></div>`;
+    box.innerHTML =
+      head +
+      `<div class="empty"><h3>${t("没有找到", "Nothing found")}</h3><div>${t("换个关键词试试", "Try another keyword")}</div></div>`;
     return;
   }
   const mark = (text: string, m: string) => {
     const i = m ? text.toLowerCase().indexOf(m.toLowerCase()) : -1;
-    return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + m.length))}</mark>${esc(text.slice(i + m.length))}`;
+    return i < 0
+      ? esc(text)
+      : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + m.length))}</mark>${esc(text.slice(i + m.length))}`;
   };
   box.innerHTML =
     head +
@@ -233,7 +315,8 @@ async function runSearch(q: string): Promise<void> {
       <a class="s-title" href="#/m/${encodeURIComponent(m.id)}"><b>${esc(m.title)}</b>${m.archived ? `<span class="arch-badge">${t("已归档", "Archived")}</span>` : ""}<span>${esc(m.date)} ${esc(m.time)}</span></a>
       ${m.hits
         .map(
-          (h) => `<a class="s-hit" href="#/m/${encodeURIComponent(m.id)}?t=${h.ms}"><span class="ts">${fmt(h.ms)}</span><span class="who">${esc(speakerName(h.speaker))}</span><span class="txt">${mark(h.text, h.match)}</span></a>`,
+          (h) =>
+            `<a class="s-hit" href="#/m/${encodeURIComponent(m.id)}?t=${h.ms}"><span class="ts">${fmt(h.ms)}</span><span class="who">${esc(speakerName(h.speaker))}</span><span class="txt">${mark(h.text, h.match)}</span></a>`,
         )
         .join("")}
       ${!m.hits.length && m.minutes_hit ? `<div class="s-note">${t("纪要里提到了", "Mentioned in the minutes")}</div>` : ""}
@@ -252,7 +335,10 @@ const card = (m: MeetingSummary, i: number) => `
     <div class="foot">
       <span class="avatars">${m.speakers
         .slice(0, 4)
-        .map((s, k) => `<span style="background:${color(k)}">${esc(initial(s))}</span>`)
+        .map(
+          (s, k) =>
+            `<span style="background:${color(k)}">${esc(initial(s))}</span>`,
+        )
         .join("")}</span>
       ${m.speakers.length ? `<span>${t(`${m.speakers.length} 位说话人`, `${m.speakers.length} speaker${m.speakers.length > 1 ? "s" : ""}`)}</span>` : ""}
       <span class="status ${m.has_minutes ? "ok" : m.has_transcript ? "half" : ""}">${m.has_minutes ? t("已出纪要", "Minutes") : m.has_transcript ? t("仅转写", "Transcript only") : t("未处理", "Not processed")}</span>

@@ -7,5 +7,7 @@
   <string>录下会议里你自己的声音，用来转写和生成纪要。录音只保存在这台电脑上。</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>录下会议软件里对方的声音（系统声音），用来转写和生成纪要。录音只保存在这台电脑上。</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>读取和保存你在 Tingo 中管理的会议录音、转写和纪要。</string>
 </dict>
 </plist>

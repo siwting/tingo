@@ -141,9 +141,9 @@ pub(super) fn start_inbox(state: &Shared) {
     });
 }
 pub(super) async fn inbox_get(State(s): State<Shared>) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        crate::workbench::read(&s.opt.root.join("inbox-settings.json")).map_err(server_error)?,
-    ))
+    let value = crate::workbench::read(&s.opt.root.join("inbox-settings.json")).map_err(server_error)?;
+    let settings: crate::inbox::Settings = serde_json::from_value(value).map_err(|e| server_error(e.to_string()))?;
+    Ok(Json(json!(settings)))
 }
 pub(super) async fn inbox_put(
     State(s): State<Shared>,
@@ -452,4 +452,26 @@ pub(super) async fn classify_meeting(
     }
     meetings::write_meta(&dir, &meta).map_err(|e| server_error(e.to_string()))?;
     Ok(Json(json!(meta)))
+}
+
+/// The active library is immutable while jobs run. Persist a selection for next launch.
+pub(super) async fn storage_location(State(s): State<Shared>, Json(v): Json<Value>) -> ApiResult<Json<Value>> {
+    if s.jobs.lock().unwrap().iter().any(|j| j.busy()) || s.recording.lock().unwrap().is_some() {
+        return Err(bad(tr("请先结束录音和处理任务", "Finish recording and processing before changing the library")));
+    }
+    if crate::config::env_var("ROOT").is_some() {
+        return Err(bad(tr("当前由 TINGO_ROOT 环境变量指定目录，请移除覆盖后重启", "TINGO_ROOT overrides this library. Remove the override and restart first")));
+    }
+    let path = v["root"].as_str().filter(|p| !p.trim().is_empty()).ok_or_else(|| bad("Missing library path"))?;
+    let path = if path.starts_with("~/") { PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(&path[2..]) } else { PathBuf::from(path) };
+    if !path.is_absolute() { return Err(bad(tr("请选择绝对路径", "Choose an absolute path"))); }
+    std::fs::create_dir_all(&path).map_err(|e| bad(e.to_string()))?;
+    let path = path.canonicalize().map_err(|e| bad(e.to_string()))?;
+    let probe = path.join(format!(".tingo-write-check-{}", std::process::id()));
+    let _file = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map_err(|e| bad(e.to_string()))?;
+    std::fs::remove_file(&probe).map_err(|e| bad(e.to_string()))?;
+    let location = s.opt.config_path.with_file_name("library.json");
+    std::fs::create_dir_all(location.parent().unwrap()).map_err(|e| server_error(e.to_string()))?;
+    crate::workbench::write(&location, &json!({"root":path})).map_err(server_error)?;
+    Ok(Json(json!({"root":path,"restart_required":true})))
 }

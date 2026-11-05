@@ -27,15 +27,13 @@ TINGO_WEB_HOST=你的本机局域网或Tailscale地址 ./scripts/run-web.sh
 
 ## 识别与内容整理
 
-原有 Paraformer、SenseVoice、Fun-ASR-Nano、Apple Speech 保留。新增 Qwen3-ASR MLX，使用 Tingo 的音频解码、VAD、CAM++ 和统一聚类；MLX 只替换识别步骤。它是可选组件，需要 Apple Silicon、可用的 Metal、Python `mlx-audio`/`soundfile` 和已下载的 Qwen3-ASR MLX 模型。
+新下载的识别模型统一使用 MLX：Qwen3-ASR 0.6B / 1.7B 8-bit。首次点击“下载”会准备 Python 3.12、mlx-audio 运行环境、模型与共用 VAD/声纹组件；后续复用已安装内容。下载失败可以重试。Apple Speech 仍由 macOS 管理；已安装的 Paraformer、SenseVoice、Fun-ASR-Nano 保留兼容，但不再提供新的 ONNX 识别模型下载。
 
-```sh
-export TINGO_MLX_HELPER="$PWD/scripts/tingo-mlx"
-export TINGO_MLX_PYTHON="你的MLX虚拟环境/bin/python"
-export TINGO_MLX_MODEL="你的Qwen3-ASR模型目录"
-```
+模型页顶部显示实际目录，macOS 默认为 `~/Library/Application Support/io.github.tancheng33.tingo/models`。MLX 权重在 `mlx/qwen-mlx` 和 `mlx/qwen-mlx-1.7b`，自动安装环境在 `runtime/venv`，安装日志为 `mlx-install.log`。识别继续使用 Tingo 的音频解码、VAD、CAM++ 和统一聚类，MLX 替换识别步骤并接收热词与会议语言。
 
-从继承这些环境变量的终端启动 App，再在识别模型中选择 Qwen3-ASR MLX。首次需准备 Tingo 共用的声纹/VAD 模型。模型文件不复制进 Git，也不隐式替换现有引擎。
+已有环境可通过模型目录内的 `mlx-runtime.json`（`{"python":"绝对路径/bin/python"}`）复用。仍兼容高级覆盖 `TINGO_MLX_PYTHON`、`TINGO_MLX_MODEL`（0.6B）和 `TINGO_MLX_HELPER`。模型文件不入 Git。
+
+Storage 可填写新的绝对保存路径，保存到配置旁的 `library.json`，重启 App / Web 后生效。现有会议保留在原位置，不自动移动；切回原目录可再次查看。环境变量 `TINGO_ROOT` 的显式覆盖优先于界面设置。
 
 内容整理保留 OpenAI 兼容接口、Anthropic 与 Ollama；设置新增 CLI 分类，仅此分类提供 Claude Code CLI / Codex CLI（已有登录）。模型可留空，使用所选 CLI 的默认模型，无需 API Key；需要先在对应工具登录。可用 `TINGO_CODEX_BIN` / `TINGO_CLAUDE_BIN` 指定可执行文件。Claude Code 使用无工具、无会话持久化的 print 模式，参见[官方 CLI 文档](https://code.claude.com/docs/en/cli-reference)。转写文本会发给所选服务；音频在本机处理。CLI 接入使用临时目录、只读沙箱、不加载用户配置并关闭工具，依据[官方非交互文档](https://learn.chatgpt.com/docs/non-interactive-mode)。
 

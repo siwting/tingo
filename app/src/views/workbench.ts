@@ -181,7 +181,7 @@ export async function mountGlossary(root: HTMLElement): Promise<void> {
   try {
     let terms = await api<Term[]>("/api/glossary");
     if (!root.isConnected) return;
-    root.innerHTML = `<h3>${t("名词与纠错", "Names and corrections")}</h3><p class="hint">${t("正式名称、真实称呼作为识别热词。错误写法单独记录，不将真实称呼误当错字。", "Names and aliases are recognition hotwords. Misheard forms are kept separately from genuine aliases.")}</p><div id="terms"></div>${input("name", t("正式名称", "Name"))}${input("aliases", t("真实称呼（逗号分隔）", "Aliases (comma separated)"))}${input("errors", t("错误写法（逗号分隔）", "Misheard forms (comma separated)"))}${button("saveTerm", t("保存词条", "Save term"))}${status}`;
+    root.innerHTML = `<h3>${t("名词与纠错", "Names and corrections")}</h3><p class="hint">${t("正式名称、真实称呼作为识别热词。错误写法单独记录，不将真实称呼误当错字。", "Names and aliases are recognition hotwords. Misheard forms are kept separately from genuine aliases.")}</p><h4 id="termCount"></h4><div id="terms"></div>${input("name", t("正式名称", "Name"))}${input("aliases", t("真实称呼（逗号分隔）", "Aliases (comma separated)"))}${input("errors", t("错误写法（逗号分隔）", "Misheard forms (comma separated)"))}${button("saveTerm", t("保存词条", "Save term"))}${status}`;
     const { el, value, action } = controls(root);
     let editing: number | null = null;
     const persist = async (next: Term[]) => {
@@ -189,12 +189,18 @@ export async function mountGlossary(root: HTMLElement): Promise<void> {
       draw();
     };
     const draw = () => {
-      el("terms").innerHTML = terms
-        .map(
-          (x, i) =>
-            `<div class="st-row"><label><input data-enable="${i}" type="checkbox" ${x.enabled ? "checked" : ""}> ${esc(x.name)} <small>${esc(x.aliases.join(", "))}</small></label><span><button class="btn" data-edit="${i}">${t("编辑", "Edit")}</button><button class="btn" data-remove="${i}">${t("移除", "Remove")}</button></span></div>`,
-        )
-        .join("");
+      el("termCount").textContent = t(
+        `已保存的词条（${terms.length}）`,
+        `Saved terms (${terms.length})`,
+      );
+      el("terms").innerHTML =
+        terms
+          .map(
+            (x, i) =>
+              `<div class="st-row"><label><input data-enable="${i}" type="checkbox" ${x.enabled ? "checked" : ""}> ${esc(x.name)} <small>${esc(x.aliases.join(", "))}${x.errors.length ? ` · ${t("错误写法", "Misheard")}: ${esc(x.errors.join(", "))}` : ""}</small></label><span><button class="btn" data-edit="${i}">${t("编辑", "Edit")}</button><button class="btn" data-remove="${i}">${t("移除", "Remove")}</button></span></div>`,
+          )
+          .join("") ||
+        `<p class="hint">${t("还没有保存的名词词条", "No saved terms yet")}</p>`;
       el("terms")
         .querySelectorAll<HTMLButtonElement>("[data-edit]")
         .forEach(
@@ -272,7 +278,7 @@ export async function mountInbox(root: HTMLElement): Promise<void> {
       "/api/workbench/inbox",
     );
     if (!root.isConnected) return;
-    root.innerHTML = `<h2>${t("自动导入", "Automatic import")}</h2><p class="hint">${t("监视本机目录，文件稳定两分钟后自动导入。保留源文件；失败每五分钟重试，最多三次。", "Watch local folders and import files after two stable minutes. Originals are retained. Failures retry every five minutes, up to three attempts.")}</p><label><input type="checkbox" id="enabled" ${inbox.enabled ? "checked" : ""}> ${t("启用", "Enabled")}</label><label class="field">${t("监视目录（每行一个绝对路径）", "Watched folders (one absolute path per line)")}<textarea class="textarea" rows="4" id="directories">${esc(inbox.directories.join("\n"))}</textarea></label>${button("saveInbox", t("保存", "Save"))}${status}`;
+    root.innerHTML = `<h2>${t("自动导入", "Automatic import")}</h2><p class="hint">${t("监视本机目录，文件稳定两分钟后自动导入。保留源文件；失败每五分钟重试，最多三次。", "Watch local folders and import files after two stable minutes. Originals are retained. Failures retry every five minutes, up to three attempts.")}</p><label><input type="checkbox" id="enabled" ${inbox.enabled ? "checked" : ""}> ${t("启用", "Enabled")}</label><label class="field">${t("监视目录（每行一个绝对路径）", "Watched folders (one absolute path per line)")}<textarea class="textarea" rows="4" id="directories">${esc((inbox.directories ?? []).join("\n"))}</textarea></label>${button("saveInbox", t("保存", "Save"))}${status}`;
     const { el, value, action } = controls(root);
     action("saveInbox", async () => {
       await api("/api/workbench/inbox", {

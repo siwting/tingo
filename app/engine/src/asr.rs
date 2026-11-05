@@ -26,10 +26,11 @@ pub enum AsrKind {
     FunAsrNano,
     AppleSpeech,
     QwenMlx,
+    QwenMlx17,
 }
 
 impl AsrKind {
-    pub const ALL: [AsrKind; 5] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech, AsrKind::QwenMlx];
+    pub const ALL: [AsrKind; 6] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech, AsrKind::QwenMlx, AsrKind::QwenMlx17];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -38,8 +39,11 @@ impl AsrKind {
             AsrKind::FunAsrNano => "funasr-nano",
             AsrKind::AppleSpeech => "apple-speech",
             AsrKind::QwenMlx => "qwen-mlx",
+            AsrKind::QwenMlx17 => "qwen-mlx-1.7b",
         }
     }
+
+    pub fn is_mlx(self) -> bool { matches!(self, Self::QwenMlx | Self::QwenMlx17) }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.id() == id)
@@ -47,12 +51,12 @@ impl AsrKind {
 
     /// 能指定会议语言（[asr] language）；Paraformer 只认中文
     pub fn uses_language(self) -> bool {
-        matches!(self, AsrKind::SenseVoice | AsrKind::FunAsrNano | AsrKind::AppleSpeech)
+        matches!(self, AsrKind::SenseVoice | AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17)
     }
 
     /// 模型自己会加标点（不用再过 CT-Transformer）。SenseVoice 按 VAD 切出的短段识别时基本不出标点，照样要过
     fn punctuates(self) -> bool {
-        matches!(self, AsrKind::FunAsrNano | AsrKind::AppleSpeech)
+        matches!(self, AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17)
     }
 }
 
@@ -88,12 +92,13 @@ impl ModelPaths {
             AsrKind::FunAsrNano => "funasr-nano",
             AsrKind::AppleSpeech => "apple-speech",
             AsrKind::QwenMlx => "qwen-mlx",
+            AsrKind::QwenMlx17 => "qwen-mlx-1.7b",
         })
     }
     pub fn asr_files(&self, kind: AsrKind) -> Vec<PathBuf> {
         let d = self.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech | AsrKind::QwenMlx => vec![],
+            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 => vec![],
             AsrKind::Paraformer => vec![self.paraformer(), self.tokens()],
             AsrKind::SenseVoice => vec![d.join("model.int8.onnx"), d.join("tokens.txt")],
             AsrKind::FunAsrNano => vec![
@@ -111,7 +116,7 @@ impl ModelPaths {
         self.base().iter().all(|p| p.is_file())
     }
     pub fn asr_ready(&self, kind: AsrKind) -> bool {
-        if kind == AsrKind::QwenMlx { return crate::mlx::ready(); }
+        if kind.is_mlx() { return crate::mlx::ready_for(&self.dir, kind); }
         self.asr_files(kind).iter().all(|p| p.is_file())
     }
     /// 默认的一套（基础模型 + Paraformer）是否齐全：首次启动下载的就是这一套
@@ -121,13 +126,13 @@ impl ModelPaths {
     fn active_file(&self) -> PathBuf {
         self.dir.join("active-asr.txt")
     }
-    /// 当前选用的识别模型；没选过或者选的那个文件不全时用 Paraformer
+    /// 保留已安装的旧模型；新库默认使用 Qwen MLX。
     pub fn active(&self) -> AsrKind {
         std::fs::read_to_string(self.active_file())
             .ok()
             .and_then(|s| AsrKind::from_id(s.trim()))
             .filter(|&k| self.asr_ready(k))
-            .unwrap_or(AsrKind::Paraformer)
+            .unwrap_or_else(|| if self.asr_ready(AsrKind::Paraformer) { AsrKind::Paraformer } else { AsrKind::QwenMlx })
     }
     pub fn set_active(&self, kind: AsrKind) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
@@ -153,6 +158,7 @@ pub struct Engine {
     pub language: String,
     rec: Option<OfflineRecognizer>,
     apple_bin: Option<PathBuf>,
+    models_dir: PathBuf,
     punct: Option<OfflinePunctuation>,
     spk: SpeakerEmbeddingExtractor,
     vad: VadModelConfig,
@@ -196,11 +202,11 @@ impl Engine {
         }
         let mut cfg = OfflineRecognizerConfig::default();
         cfg.model_config.num_threads = threads;
-        let rec = if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx) { None } else {
+        let rec = if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17) { None } else {
         let [first, second, ..] = &models.asr_files(kind)[..] else { unreachable!() };
         let dir = models.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech | AsrKind::QwenMlx => unreachable!(),
+            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 => unreachable!(),
             AsrKind::Paraformer => {
                 cfg.model_config.paraformer.model = path_str(first);
                 cfg.model_config.tokens = path_str(second);
@@ -264,10 +270,11 @@ impl Engine {
         vad.num_threads = 1;
         Ok(Self {
             kind,
-            hotwords: if kind == AsrKind::FunAsrNano { hotwords.to_vec() } else { Vec::new() },
+            hotwords: if kind == AsrKind::FunAsrNano || kind.is_mlx() { hotwords.to_vec() } else { Vec::new() },
             language: if kind.uses_language() { language.to_string() } else { String::new() },
             rec,
             apple_bin: None,
+            models_dir: models.dir.clone(),
             punct,
             spk,
             vad,
@@ -286,13 +293,13 @@ impl Engine {
 
     pub fn transcribe(&self, samples: &[f32], offset_ms: u64) -> Result<Vec<Segment>, String> {
         let _guard = self.lock.lock().unwrap();
-        if self.kind == AsrKind::QwenMlx {
+        if self.kind.is_mlx() {
             let vad=VoiceActivityDetector::create(&self.vad,120.0).ok_or("Voice activity detector failed to load")?;
             for chunk in samples.chunks(512){vad.accept_waveform(chunk);}
             vad.flush();let mut ranges=Vec::new();
             while let Some(segment)=vad.front(){let start=segment.start() as f64/SR as f64;let end=start+segment.samples().len() as f64/SR as f64;ranges.push((start,end));vad.pop();}
             if ranges.is_empty(){return Ok(Vec::new());}
-            let spans=crate::mlx::transcribe(samples,&self.hotwords,&ranges)?;
+            let spans=crate::mlx::transcribe(&self.models_dir,self.kind,&self.language,samples,&self.hotwords,&ranges)?;
             return Ok(spans.into_iter().filter(|s|!s.text.trim().is_empty()).map(|s| {
                 let a=((s.start*SR as f64) as usize).min(samples.len());
                 let b=((s.end*SR as f64) as usize).min(samples.len());
