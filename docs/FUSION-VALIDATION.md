@@ -61,3 +61,26 @@ CLI 分类调整：实际界面验证两种 CLI 选择保存、切换到 Claude 
 - 实际旧听记 25 场记录迁至 `~/Tingo`：24 场已有转写、1 场原本处理失败；保留 229 条待办、2 条问答、说话人名称和完整源行。约 1.87 GB 录音逐份校验 SHA-256；24 份旧导出及历史备份另存 `.migration/tingji-2026-11-05/`，含完整 SQLite 一致性快照和校验清单。
 - 新版真实 App 显示 25 场，接口确认全局设置和问答可读取；录音 HTTP Range 返回 206，清理后会议数量不变且无重复导入任务。自动导入保留用户开启状态。
 - 校验后将旧数据库、旧导出、旧备份、旧监听启动项及旧位置副本移入系统废纸篓；旧后台服务已停止。22 份系统语音备忘录原录音全部保留。
+
+## 2026-11-05 Meeting detail tabs and task layout
+
+- Split legacy embedded `AI 分析与建议` sections for display only; keep original minutes and exports intact. Desktop now has separate Minutes, Transcript, AI analysis, Tasks tabs. The reader uses the same split and displays analysis once, preferring the workbench's latest insights with legacy fallback.
+- Tasks use multiline auto-height textareas, labelled owner/deadline fields and responsive spacing. Deadline is text so relative deadlines survive edits and empty deadlines do not resemble today's date.
+- `node --test app/tests/analysis.test.mjs`: 3 passed (Chinese/English headings, next-section preservation, fenced content and empty input).
+- TypeScript check, Vite build and debug macOS bundle passed. Native app navigation verified separate tabs, long task content and existing analysis loading. No AI regeneration was invoked and no meeting data was changed during verification.
+
+### Reading layout follow-up
+
+- User-requested tab order: Minutes → AI analysis → Tasks → Transcript.
+- Analysis now uses the same `card doc`/Markdown rendering as minutes, including legacy category headings and bullet lists.
+- Replaced the editable task form with a read-only numbered list, owner/deadline metadata and textual completed status. Removed task checkboxes and editing actions from this pane.
+- Four frontend helper tests, TypeScript/Vite build and debug macOS bundle passed. Restarted the native app and visually verified both analysis and read-only tasks with existing meeting content.
+
+## 2026-11-05 Restore model choices and add MLX engines
+
+- All eight catalog entries remain visible, including uninstalled original Paraformer/SenseVoice/Fun-ASR-Nano ONNX models. Restored their native download paths and labelled ONNX explicitly.
+- Added independent SenseVoice Small MLX and Fun-ASR-Nano MLX identifiers, selection, readiness, managed downloads and inference. Fun-ASR uses the upstream `fun_asr_nano` checkpoint compatible with pinned mlx-audio 0.6.1, not the incompatible mlx-audio-plus `funasr` 8-bit checkpoint.
+- Downloader includes SenseVoice normalization/BPE assets and nested Fun-ASR tokenizer assets, checks required assets before completion, and runtime setup includes sentencepiece. SenseVoice receives language codes; autoregressive engines receive mapped language names.
+- Downloaded both new models into the existing App model directory. Both passed real synthetic Chinese speech through native decode/VAD/MLX/CAM++/clustering. Long meeting accuracy/performance was not benchmarked.
+- 86 native tests passed outside sandbox (the sandbox cannot perform the AAC encoder test). Extended model status test separately verifies all models are visible before installation, unready models cannot be selected, and both new installed model IDs can be selected and persist.
+- TypeScript/Vite build and debug App bundle passed. Restarted App; settings shows eight models, both newly installed MLX models offer Use, all three original ONNX models offer Download. Current Qwen selection retained.

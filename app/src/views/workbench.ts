@@ -1,3 +1,5 @@
+import { analysisMarkdown } from "../analysis";
+import { renderMarkdown } from "../markdown";
 /** Shared controls mounted inside existing meetings and settings pages. */
 import { api, meetingPath } from "../api";
 import { esc } from "../dom";
@@ -79,100 +81,21 @@ export async function mountQuestions(
         .join("") || t("暂无问答历史", "No questions yet");
   });
 }
-export async function mountMeetingTools(
-  root: HTMLElement,
-  id: string,
-): Promise<void> {
-  root.classList.add("workbench");
-  root.innerHTML = status;
+export async function mountMeetingTools(root: HTMLElement, id: string): Promise<void> {
+  root.className = "md meeting-tasks";
+  root.innerHTML = `<p class="hint">${t("加载中…", "Loading…")}</p>`;
   try {
-    const data = await api<{
-      tasks?: Task[];
-      confirmed?: boolean;
-      insights?: Answer;
-    }>(meetingPath(id, "/workbench"));
+    const data = await api<{ tasks?: Task[] }>(meetingPath(id, "/workbench"));
     if (!root.isConnected) return;
-    root.innerHTML = `<h3>${t("待办与确认", "Tasks and review")}</h3><label><input type="checkbox" id="confirmed" ${data.confirmed ? "checked" : ""}> ${t("纪要已人工确认", "Minutes reviewed")}</label><div id="tasks"></div>${button("addTask", t("添加待办", "Add task"))}${button("saveTasks", t("保存", "Save"))}${button("extract", t("从纪要提取待办", "Extract tasks"))}<h3>${t("洞察与建议", "Insights and suggestions")}</h3><div id="insightsText">${data.insights ? answers(data.insights) : ""}</div>${button("insights", t("生成洞察", "Generate insights"))}${button("classify", t("生成标题与分类", "Generate title and tags"))}<details><summary>${t("纠正转写", "Correct transcript")}</summary><p class="hint">${t("保留最初转写，同步更新纪要和待办中的文字。", "Keeps the original transcript and updates matching text in minutes and tasks.")}</p>${input("original", t("错误写法", "Incorrect text"))}${input("replacement", t("正确写法", "Replacement"))}${button("correct", t("纠正", "Correct"))}${button("originalView", t("查看最初原文", "View original transcript"))}<div id="originalText"></div></details>${status}<div id="meetingQuestions"></div>`;
-    const { el, value, action } = controls(root);
-    let tasks = data.tasks ?? [];
-    const draw = () => {
-      el("tasks").innerHTML = tasks
-        .map(
-          (x, i) =>
-            `<div class="task-row" data-task="${i}"><input type="checkbox" data-field="done" aria-label="${t("完成", "Done")}" ${x.done ? "checked" : ""}><input class="input" data-field="text" aria-label="${t("待办", "Task")}" value="${esc(x.text)}"><input class="input" data-field="owner" aria-label="${t("负责人", "Owner")}" placeholder="${t("负责人", "Owner")}" value="${esc(x.owner)}"><input class="input" type="date" data-field="due" aria-label="${t("截止日期", "Due date")}" value="${esc(x.due)}"></div>`,
-        )
-        .join("");
-    };
-    const collect = () => {
-      tasks = Array.from(el("tasks").querySelectorAll("[data-task]")).map(
-        (row) => {
-          const f = (key: string) =>
-            row.querySelector<HTMLInputElement>(`[data-field="${key}"]`)!;
-          return {
-            text: f("text").value,
-            owner: f("owner").value,
-            due: f("due").value,
-            done: f("done").checked,
-          };
-        },
-      );
-    };
-    const save = async () => {
-      collect();
-      await api(meetingPath(id, "/workbench"), {
-        method: "PUT",
-        json: { tasks, confirmed: el<HTMLInputElement>("confirmed").checked },
-      });
-    };
-    draw();
-    el("addTask").onclick = () => {
-      collect();
-      tasks.push({ text: "", owner: "", due: "", done: false });
-      draw();
-    };
-    action("saveTasks", save);
-    action("extract", async () => {
-      await save();
-      const r = await api<{ tasks: Task[] }>(
-        meetingPath(id, "/tasks/extract"),
-        { method: "POST" },
-      );
-      tasks = r.tasks;
-      draw();
-    });
-    action("insights", async () => {
-      const r = await api<{ insights: Answer }>(meetingPath(id, "/insights"), {
-        method: "POST",
-      });
-      el("insightsText").innerHTML = answers(r.insights);
-    });
-    action("classify", async () => {
-      await api(meetingPath(id, "/classify"), { method: "POST" });
-      location.hash = `#/m/${encodeURIComponent(id)}`;
-      location.reload();
-    });
-    action("correct", async () => {
-      await save();
-      await api(meetingPath(id, "/correct"), {
-        json: {
-          original: value("original"),
-          replacement: value("replacement"),
-        },
-      });
-      const r = await api<{ tasks: Task[] }>(meetingPath(id, "/workbench"));
-      tasks = r.tasks ?? [];
-      draw();
-    });
-    action("originalView", async () => {
-      const r = await api<{ sentences: { text: string }[] }>(
-        meetingPath(id, "/original"),
-      );
-      el("originalText").innerHTML =
-        `<pre style="white-space:pre-wrap">${esc(r.sentences.map((s) => s.text).join("\n"))}</pre>`;
-    });
-    await mountQuestions(el("meetingQuestions"), id);
-  } catch (e) {
-    root.textContent = String(e);
+    root.innerHTML = `${data.tasks?.length
+      ? `<ol class="task-reading-list">${data.tasks.map((task) => `<li><p class="task-reading-text">${esc(task.text)}</p><p class="task-reading-meta">${[
+        task.owner ? `${t("负责人", "Owner")}: ${esc(task.owner)}` : "",
+        task.due ? `${t("截止时间", "Due")}: ${esc(task.due)}` : "",
+        task.done ? t("已完成", "Completed") : "",
+      ].filter(Boolean).join(" · ")}</p></li>`).join("")}</ol>`
+      : `<p class="hint">${t("暂无待办事项。", "No tasks yet.")}</p>`}`;
+  } catch (error) {
+    if (root.isConnected) root.textContent = String(error);
   }
 }
 export async function mountGlossary(root: HTMLElement): Promise<void> {
@@ -294,5 +217,26 @@ export async function mountInbox(root: HTMLElement): Promise<void> {
     });
   } catch (e) {
     root.textContent = String(e);
+  }
+}
+
+export async function mountMeetingAnalysis(root: HTMLElement, id: string, legacy: string): Promise<void> {
+  root.className = "meeting-analysis";
+  root.innerHTML = status;
+  try {
+    const data = await api<{ insights?: Answer }>(meetingPath(id, "/workbench"));
+    if (!root.isConnected) return;
+    root.innerHTML = `<p class="analysis-note">${t("基于会议原文的 AI 推断与建议，不代表会议决定。", "AI interpretations and suggestions based on the transcript, not meeting decisions.")}</p><div id="insightsText"></div>${button("insights", t("重新生成分析", "Generate analysis"))}${status}`;
+    const { el, action } = controls(root);
+    const show = (answer?: Answer) => {
+      el("insightsText").innerHTML = answer?.parts?.length ? answer.parts.map((part) => `<div class="md">${renderMarkdown(analysisMarkdown(part.answer))}</div>${part.citations.map((citation) => `<p class="hint"><a href="#/m/${encodeURIComponent(citation.meeting)}?t=${citation.start_ms}">${esc(citation.quote)}</a></p>`).join("")}`).join("<hr>") : legacy ? `<div class="md">${renderMarkdown(analysisMarkdown(legacy))}</div>` : `<p class="hint">${t("还没有分析与建议。", "No analysis yet.")}</p>`;
+    };
+    show(data.insights);
+    action("insights", async () => {
+      const result = await api<{ insights: Answer }>(meetingPath(id, "/insights"), { method: "POST" });
+      if (root.isConnected) show(result.insights);
+    });
+  } catch (error) {
+    if (root.isConnected) root.innerHTML = `${legacy ? `<div class="md">${renderMarkdown(analysisMarkdown(legacy))}</div>` : ""}<p role="status">${esc(String(error))}</p>`;
   }
 }

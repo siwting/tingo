@@ -184,7 +184,7 @@ impl AppState {
         let kind = paths.active();
         let cfg = self.processing_config();
         // Fun-ASR-Nano 在加载时就要拿到热词；SenseVoice、Fun-ASR-Nano 加载时定下会议语言
-        let hot = if matches!(kind, AsrKind::FunAsrNano | AsrKind::QwenMlx | AsrKind::QwenMlx17) { cfg.hotwords } else { Vec::new() };
+        let hot = if matches!(kind, AsrKind::FunAsrNano | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::FunAsrNanoMlx) { cfg.hotwords } else { Vec::new() };
         let lang = if kind.uses_language() { cfg.asr_language } else { String::new() };
         let current = || {
             self.engine
@@ -1798,7 +1798,6 @@ async fn list_asr_models(State(s): State<Shared>) -> Json<Value> {
         .map_err(|e| e.to_string()).and_then(|r| r);
     let list: Vec<Value> = models::catalog()
         .iter()
-        .filter(|m| m.kind.is_mlx() || m.kind == AsrKind::AppleSpeech || paths.asr_ready(m.kind))
         .map(|m| {
             let mut v = json!({
                 "id": m.kind.id(),
@@ -1839,9 +1838,6 @@ fn paraformer_warning() -> &'static str {
 async fn download_model(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> ApiResult<Json<Job>> {
     let kind = model_kind(&id)?;
     let paths = s.model_paths();
-    if !kind.is_mlx() && kind != AsrKind::AppleSpeech && !paths.asr_ready(kind) {
-        return Err(bad(tr("新下载使用 MLX 模型，请选择 Qwen3-ASR MLX。", "New downloads use MLX. Choose Qwen3-ASR MLX.")));
-    }
     if kind != AsrKind::AppleSpeech && paths.base_ready() && paths.asr_ready(kind) {
         return Err(bad(tr("这个模型已经下载好了", "This model is already downloaded")));
     }
@@ -2122,6 +2118,23 @@ mod tests {
         }
         std::fs::write(&s.opt.recorder_bin, "#!/bin/sh\necho '{\"available\":true,\"ready\":true}'\n").unwrap();
         let list = list_asr_models(State(s.clone())).await.0;
+        // A fresh installation must still show every downloadable model.
+        assert_eq!(list["models"].as_array().unwrap().len(), AsrKind::ALL.len());
+        for kind in [AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::SenseVoiceMlx, AsrKind::FunAsrNanoMlx] {
+            let item = list["models"].as_array().unwrap().iter().find(|m| m["id"] == kind.id()).unwrap();
+            assert_eq!(item["ready"], false);
+            assert!(use_model(State(s.clone()), UrlPath(kind.id().into())).await.is_err());
+        }
+        let py = paths.dir.join("runtime/venv/bin/python");
+        std::fs::create_dir_all(py.parent().unwrap()).unwrap();
+        std::fs::write(py, "fixture").unwrap();
+        for kind in [AsrKind::SenseVoiceMlx, AsrKind::FunAsrNanoMlx] {
+            let dir = crate::mlx::model_dir(&paths.dir, kind);
+            std::fs::create_dir_all(&dir).unwrap();
+            for file in ["config.json", "model.safetensors", "tingo-complete.json"] { std::fs::write(dir.join(file), "fixture").unwrap(); }
+            assert!(use_model(State(s.clone()), UrlPath(kind.id().into())).await.is_ok());
+            assert_eq!(paths.active(), kind);
+        }
         let apple = list["models"].as_array().unwrap().iter().find(|m| m["id"] == "apple-speech").unwrap();
         assert_eq!(apple["ready"], true);
         assert_eq!(apple["system"], true);

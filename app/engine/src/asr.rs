@@ -27,10 +27,12 @@ pub enum AsrKind {
     AppleSpeech,
     QwenMlx,
     QwenMlx17,
+    SenseVoiceMlx,
+    FunAsrNanoMlx,
 }
 
 impl AsrKind {
-    pub const ALL: [AsrKind; 6] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech, AsrKind::QwenMlx, AsrKind::QwenMlx17];
+    pub const ALL: [AsrKind; 8] = [AsrKind::Paraformer, AsrKind::SenseVoice, AsrKind::FunAsrNano, AsrKind::AppleSpeech, AsrKind::QwenMlx, AsrKind::QwenMlx17, AsrKind::SenseVoiceMlx, AsrKind::FunAsrNanoMlx];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -40,10 +42,12 @@ impl AsrKind {
             AsrKind::AppleSpeech => "apple-speech",
             AsrKind::QwenMlx => "qwen-mlx",
             AsrKind::QwenMlx17 => "qwen-mlx-1.7b",
+            AsrKind::SenseVoiceMlx => "sensevoice-mlx",
+            AsrKind::FunAsrNanoMlx => "funasr-nano-mlx",
         }
     }
 
-    pub fn is_mlx(self) -> bool { matches!(self, Self::QwenMlx | Self::QwenMlx17) }
+    pub fn is_mlx(self) -> bool { matches!(self, Self::QwenMlx | Self::QwenMlx17 | Self::SenseVoiceMlx | Self::FunAsrNanoMlx) }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.id() == id)
@@ -51,12 +55,12 @@ impl AsrKind {
 
     /// 能指定会议语言（[asr] language）；Paraformer 只认中文
     pub fn uses_language(self) -> bool {
-        matches!(self, AsrKind::SenseVoice | AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17)
+        matches!(self, AsrKind::SenseVoice | AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx)
     }
 
     /// 模型自己会加标点（不用再过 CT-Transformer）。SenseVoice 按 VAD 切出的短段识别时基本不出标点，照样要过
     fn punctuates(self) -> bool {
-        matches!(self, AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17)
+        matches!(self, AsrKind::FunAsrNano | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::FunAsrNanoMlx)
     }
 }
 
@@ -93,12 +97,14 @@ impl ModelPaths {
             AsrKind::AppleSpeech => "apple-speech",
             AsrKind::QwenMlx => "qwen-mlx",
             AsrKind::QwenMlx17 => "qwen-mlx-1.7b",
+            AsrKind::SenseVoiceMlx => "sensevoice-mlx",
+            AsrKind::FunAsrNanoMlx => "funasr-nano-mlx",
         })
     }
     pub fn asr_files(&self, kind: AsrKind) -> Vec<PathBuf> {
         let d = self.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 => vec![],
+            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx => vec![],
             AsrKind::Paraformer => vec![self.paraformer(), self.tokens()],
             AsrKind::SenseVoice => vec![d.join("model.int8.onnx"), d.join("tokens.txt")],
             AsrKind::FunAsrNano => vec![
@@ -202,11 +208,11 @@ impl Engine {
         }
         let mut cfg = OfflineRecognizerConfig::default();
         cfg.model_config.num_threads = threads;
-        let rec = if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17) { None } else {
+        let rec = if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx) { None } else {
         let [first, second, ..] = &models.asr_files(kind)[..] else { unreachable!() };
         let dir = models.asr_dir(kind);
         match kind {
-            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 => unreachable!(),
+            AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx => unreachable!(),
             AsrKind::Paraformer => {
                 cfg.model_config.paraformer.model = path_str(first);
                 cfg.model_config.tokens = path_str(second);

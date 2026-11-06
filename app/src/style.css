@@ -756,3 +756,17 @@ a.tag-chip.sm:hover { color: var(--blue); }
 .meeting-questions[open] > summary { margin-bottom:16px; }
 .meeting-questions + .m-tools { position:relative; margin-top:0; }
 .model-directory { overflow-wrap:anywhere; margin-bottom:20px; }
+
+/* Meeting detail reading panes share the minutes typography and spacing. */
+.meeting-tasks .task-reading-list { padding-left: 24px; }
+.meeting-tasks .task-reading-list > li { padding: 12px 0 16px 6px; border-bottom: 1px solid var(--line-soft); }
+.meeting-tasks .task-reading-list > li:last-child { border-bottom: 0; }
+.meeting-tasks .task-reading-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.meeting-analysis .analysis-note, .meeting-tasks .task-reading-meta { color: var(--muted); font-size: 13px; }
+.meeting-tasks .task-reading-meta:empty { display: none; }
+.meeting-analysis > .analysis-note { margin: 0 0 24px; line-height: 1.85; }
+.meeting-analysis > .btn { margin-top: 24px; }
+@media (max-width: 760px) {
+  .tabs-row { flex-wrap: wrap; gap: 12px; }
+  .tabs-row .seg { flex-wrap: wrap; }
+}

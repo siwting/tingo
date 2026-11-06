@@ -214,7 +214,7 @@ async function drawAsr(): Promise<void> {
     .map(
       (m) => `
       <div class="asr-row ${m.active ? "on" : ""}">
-        <div class="asr-main"><b>${esc(m.name)}</b>${m.legacy ? `<em>${t("已安装 · 兼容", "Installed · legacy")}</em>` : ""}<small>${esc(m.desc)}</small>${m.warning ? `<small class="asr-warn">${esc(m.warning)}</small>` : ""}</div>
+        <div class="asr-main"><b>${esc(m.name)}</b>${m.legacy ? `<em>${t("ONNX 引擎", "ONNX engine")}</em>` : ""}<small>${esc(m.desc)}</small>${m.warning ? `<small class="asr-warn">${esc(m.warning)}</small>` : ""}</div>
         <div class="asr-act">${action(m)}</div>
       </div>`,
     )
@@ -517,8 +517,8 @@ function panelAsr(x: Ctx): void {
     <h2>${t("识别模型", "Speech model")}</h2>
     <p class="hint model-directory">${t("模型下载目录", "Model download directory")}: <code id="modelDirectory"></code></p>
     <p class="hint">${t(
-      "下载项均为 MLX 版本，在 Apple Silicon GPU 上本地识别，录音不会上传。首次下载会一并准备运行环境和共用的说话人/VAD 组件。已安装的旧模型仍可使用，Apple Speech 由系统管理。",
-      "Downloadable recognition models use MLX on the Apple Silicon GPU. Audio stays local. The first download also installs the runtime and shared speaker/VAD components. Installed legacy models remain usable; Apple Speech is system-managed.",
+      "MLX 模型在 Apple Silicon GPU 上运行，原有 ONNX 模型也可下载和使用。所有识别均在本机完成，录音不会上传。首次下载会准备对应运行环境和共用的说话人/VAD 组件；Apple Speech 由系统管理。",
+      "MLX models run on Apple Silicon GPU; original ONNX models remain available to download and use. Recognition stays local. The first download prepares the runtime and shared speaker/VAD components. Apple Speech is system-managed.",
     )}</p>
     <div class="field" style="margin-bottom:14px"><label>${t("会议里说的语言", "Meeting language")}</label>
       ${segChoice("sAsrLang", x.c.asr_language ?? "zh", [

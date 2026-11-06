@@ -1,15 +1,16 @@
 //! Explicit smoke test: prepares shared native speech models, then runs MLX on a supplied WAV.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let kind = args.iter().find_map(|arg| tingo_engine::asr::AsrKind::from_id(arg)).unwrap_or(tingo_engine::asr::AsrKind::QwenMlx);
     if args.iter().any(|a| a == "--install") {
-        tingo_engine::mlx::install(std::path::Path::new(&args[1]), tingo_engine::asr::AsrKind::QwenMlx, |stage| eprintln!("{stage}")).expect("managed MLX install");
+        tingo_engine::mlx::install(std::path::Path::new(&args[1]), kind, |stage| eprintln!("{stage}")).expect("managed MLX install");
     }
     let paths = tingo_engine::asr::ModelPaths::new(&args[1]);
-    tingo_engine::models::ensure_model(&paths, tingo_engine::asr::AsrKind::QwenMlx, |_, _| {})
+    tingo_engine::models::ensure_model(&paths, kind, |_, _| {})
         .expect("shared models");
     let engine = tingo_engine::asr::Engine::load(
         &paths,
-        tingo_engine::asr::AsrKind::QwenMlx,
+        kind,
         &["注册转化".into()],
         "zh",
         4,

@@ -55,7 +55,7 @@ pub fn install(root: &Path, kind: AsrKind, mut stage: impl FnMut(&str)) -> Resul
     let log = root.join("mlx-install.log");
     let py = python(root);
     let managed = py == root.join("runtime/venv/bin/python");
-    let runtime_ready = py.is_file() && Command::new(&py).args(["-c", "import mlx.core, mlx_audio, soundfile, huggingface_hub"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let runtime_ready = py.is_file() && Command::new(&py).args(["-c", "import mlx.core, mlx_audio, soundfile, huggingface_hub, sentencepiece; import mlx_audio.stt.models.sensevoice, mlx_audio.stt.models.fun_asr_nano"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
     if !runtime_ready && !managed { return Err("Configured MLX Python is unavailable or missing dependencies".into()); }
     if !runtime_ready {
         stage(tr("准备 MLX 运行环境…", "Preparing MLX runtime…"));
@@ -74,16 +74,22 @@ pub fn install(root: &Path, kind: AsrKind, mut stage: impl FnMut(&str)) -> Resul
         }
         let mut command = Command::new(&uv);
         command.env("UV_CACHE_DIR",root.join("runtime/cache")).args(["pip","install","--python"]).arg(&py)
-            .args(["mlx-audio==0.6.1", "soundfile", "huggingface_hub"]);
+            .args(["mlx-audio==0.6.1", "soundfile", "huggingface_hub", "sentencepiece"]);
         run_setup(command, &log)?;
     }
     // Also detect an interrupted environment installation before treating it as usable.
     let mut check = Command::new(&py);
-    check.args(["-c", "import mlx.core, mlx_audio, soundfile, huggingface_hub"]);
+    check.args(["-c", "import mlx.core, mlx_audio, soundfile, huggingface_hub, sentencepiece; import mlx_audio.stt.models.sensevoice, mlx_audio.stt.models.fun_asr_nano"]);
     run_setup(check, &log)?;
     if ready_for(root, kind) { return Ok(()); }
     stage(tr("正在下载 MLX 模型（可断点续传）…", "Downloading MLX model (resumable)…"));
-    let repo = if kind == AsrKind::QwenMlx17 { "mlx-community/Qwen3-ASR-1.7B-8bit" } else { "mlx-community/Qwen3-ASR-0.6B-8bit" };
+    let repo = match kind {
+        AsrKind::QwenMlx => "mlx-community/Qwen3-ASR-0.6B-8bit",
+        AsrKind::QwenMlx17 => "mlx-community/Qwen3-ASR-1.7B-8bit",
+        AsrKind::SenseVoiceMlx => "mlx-community/SenseVoiceSmall",
+        AsrKind::FunAsrNanoMlx => "mlx-community/Fun-ASR-Nano-2512",
+        _ => return Err("Not an MLX model".into()),
+    };
     let mut command = Command::new(&py);
     // Standard HTTPS range downloads work with system proxies and resume partial files.
     command.env("HF_HUB_DISABLE_XET", "1").arg(worker(root)?).arg("--download").arg(repo).arg(model_dir(root,kind));

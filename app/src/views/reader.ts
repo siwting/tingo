@@ -1,3 +1,4 @@
+import { splitMinutesAnalysis } from "../analysis";
 /** Browser-only record viewer. All mutations remain in the desktop app. */
 import {
   api,
@@ -83,7 +84,7 @@ export async function renderReader(id?: string, at = 0): Promise<void> {
     $("#readerStatus").textContent =
       `${d.date} ${d.time}${w.confirmed ? " · 已人工确认" : ""}`;
     $("#readerBody").innerHTML =
-      `<a href="#/meetings">← 会议记录</a><h2>${esc(d.title)}</h2>${d.audio ? `<audio id="readerAudio" controls preload="metadata" src="${esc(url(meetingPath(id, "/audio")))}"></audio>` : ""}<section class="md">${renderMarkdown(d.minutes, { skipHead: true, resolve: turnResolver(d.turns, Infinity) })}</section>${w.tasks?.length ? `<h2>待办</h2>${w.tasks.map((t) => `<p>${t.done ? "☑" : "☐"} ${[t.text, t.owner, t.due].filter(Boolean).map(esc).join(" · ")}</p>`).join("")}` : ""}${w.insights ? `<h2>AI 洞察与建议</h2>${w.insights.parts.map((p) => `<p style="white-space:pre-wrap">${esc(p.answer)}</p>`).join("")}` : ""}<h2>会议原文</h2>${d.turns.map((t) => `<article class="reader-card"><button class="ts" data-ms="${t.start_ms}">${esc(t.ts)}</button> <strong>${esc(t.speaker)}</strong><p>${esc(t.text)}</p></article>`).join("")}`;
+      `<a href="#/meetings">← 会议记录</a><h2>${esc(d.title)}</h2>${d.audio ? `<audio id="readerAudio" controls preload="metadata" src="${esc(url(meetingPath(id, "/audio")))}"></audio>` : ""}<section class="md">${renderMarkdown(splitMinutesAnalysis(d.minutes).minutes, { skipHead: true, resolve: turnResolver(d.turns, Infinity) })}</section>${w.tasks?.length ? `<h2>待办</h2>${w.tasks.map((t) => `<p>${t.done ? "☑" : "☐"} ${[t.text, t.owner, t.due].filter(Boolean).map(esc).join(" · ")}</p>`).join("")}` : ""}${w.insights?.parts?.length ? `<h2>AI 分析与建议</h2>${w.insights.parts.map((p) => `<p style="white-space:pre-wrap">${esc(p.answer)}</p>`).join("")}` : splitMinutesAnalysis(d.minutes).analysis ? `<h2>AI 分析与建议</h2><div class="md">${renderMarkdown(splitMinutesAnalysis(d.minutes).analysis)}</div>` : ""}<h2>会议原文</h2>${d.turns.map((t) => `<article class="reader-card"><button class="ts" data-ms="${t.start_ms}">${esc(t.ts)}</button> <strong>${esc(t.speaker)}</strong><p>${esc(t.text)}</p></article>`).join("")}`;
     // Export/edit controls emitted by the shared fishbone renderer do not belong in the reader.
     main()
       .querySelectorAll(".fb-draw")

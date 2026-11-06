@@ -1,4 +1,5 @@
-import { mountMeetingTools } from "./workbench";
+import { splitMinutesAnalysis, minutesWithoutTasks } from "../analysis";
+import { mountMeetingTools, mountMeetingAnalysis } from "./workbench";
 /* 会议详情：纪要 / 转写两个视图、回听播放器、说话人改名、编辑纪要、重新生成。 */
 
 import { api, type Job, type MeetingDetail, meetingPath, url } from "../api";
@@ -69,7 +70,7 @@ async function guessSpeakers(): Promise<void> {
 }
 
 let audioEl: HTMLAudioElement | null = null;
-let detailTab: "minutes" | "transcript" | "analysis" = "minutes";
+let detailTab: "minutes" | "transcript" | "analysis" | "tasks" = "minutes";
 
 export function stopAudio(): void {
   if (audioEl) {
@@ -140,7 +141,7 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
         d.has_transcript
           ? `
         <div class="tabs-row">
-          <div class="seg"><button data-tab="minutes">${t("纪要", "Minutes")}</button><button data-tab="transcript">${t("转写", "Transcript")}</button>${S.env?.workbench ? `<button data-tab="analysis">${t("待办与分析", "Tasks & insights")}</button>` : ""}</div>
+          <div class="seg"><button data-tab="minutes">${t("纪要", "Minutes")}</button>${S.env?.workbench ? `<button data-tab="analysis">${t("AI分析与建议", "AI analysis & suggestions")}</button><button data-tab="tasks">${t("待办", "Tasks")}</button>` : ""}<button data-tab="transcript">${t("转写", "Transcript")}</button></div>
           <span class="grow"></span>
           <button class="btn ghost" id="aHistory">${ICON.file}${t("历史版本", "Version history")}</button>
           <button class="btn ghost" id="aEdit" ${detailTab === "minutes" && d.minutes ? "" : "hidden"}>${ICON.edit}${t("编辑", "Edit")}</button>
@@ -234,13 +235,18 @@ function drawPane(): void {
   $$<HTMLButtonElement>(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === detailTab));
   const edit = $maybe("#aEdit");
   if (edit) edit.hidden = !(detailTab === "minutes" && d.minutes) || !!jobOf(d.id); // 生成中改了也会被新纪要覆盖
-  if (detailTab === "analysis") {
-    pane.className = "card"; void mountMeetingTools(pane, d.id); return;
+  if (detailTab === "analysis" || detailTab === "tasks") {
+    pane.className = "card doc";
+    const content = document.createElement("div");
+    pane.replaceChildren(content);
+    if (detailTab === "analysis") void mountMeetingAnalysis(content, d.id, splitMinutesAnalysis(d.minutes || "").analysis);
+    else void mountMeetingTools(content, d.id);
+    return;
   }
   if (detailTab === "minutes") {
     pane.className = "card doc";
     pane.innerHTML = d.minutes
-      ? `<div class="md">${renderMarkdown(d.minutes, { skipHead: true, resolve: turnResolver(d.turns, d.duration ? tsToMs(d.duration) : Infinity) })}</div>`
+      ? `<div class="md">${renderMarkdown(S.env?.workbench ? minutesWithoutTasks(splitMinutesAnalysis(d.minutes).minutes) : d.minutes, { skipHead: true, resolve: turnResolver(d.turns, d.duration ? tsToMs(d.duration) : Infinity) })}</div>`
       : `<div class="minutes-empty">${t("还没有纪要。", "No minutes yet.")}<br><br><button class="btn primary" id="paneGen">${ICON.spark}${t("生成纪要", "Write minutes")}</button></div>`;
     const gen = $maybe("#paneGen");
     if (gen) gen.onclick = regenerate;

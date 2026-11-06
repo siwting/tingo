@@ -37,24 +37,26 @@ pub struct ModelInfo {
     pub size: u64,
 }
 
-pub fn catalog() -> [ModelInfo; 6] {
+pub fn catalog() -> [ModelInfo; 8] {
     [
         ModelInfo { kind: AsrKind::QwenMlx, name: "Qwen3-ASR 0.6B · MLX 8-bit", desc: tr("轻量多语种模型，Apple Silicon GPU 本地运行，支持热词。", "Lightweight multilingual recognition on Apple Silicon GPU, with hotwords."), size: 1_010_000_000 },
         ModelInfo { kind: AsrKind::QwenMlx17, name: "Qwen3-ASR 1.7B · MLX 8-bit", desc: tr("更大的多语种模型，需要更多内存；Apple Silicon GPU 本地运行。", "Larger multilingual model, requiring more memory. Runs on Apple Silicon GPU."), size: 2_467_000_000 },
+        ModelInfo { kind: AsrKind::SenseVoiceMlx, name: "SenseVoice Small · MLX", desc: tr("中、英、日、韩、粤语识别；Apple Silicon GPU 本地运行。", "Chinese, English, Japanese, Korean and Cantonese recognition on Apple Silicon GPU."), size: 936_489_185 },
+        ModelInfo { kind: AsrKind::FunAsrNanoMlx, name: "Fun-ASR-Nano · MLX", desc: tr("支持多语种与识别热词；Apple Silicon GPU 本地运行。", "Multilingual recognition with hotwords on Apple Silicon GPU."), size: 1_675_618_453 },
         ModelInfo { kind: AsrKind::AppleSpeech, name: "Apple Speech",
             desc: tr("macOS 26+ 系统本地识别；请明确选择中文或英文。系统管理语言模型，仍需基础声纹模型", "On-device system speech on macOS 26+. Select Chinese or English. Language assets are system-managed; shared speaker models are still needed"), size: 0 },
         ModelInfo {
             kind: AsrKind::Paraformer,
-            name: "Paraformer-large",
+            name: "Paraformer-large · ONNX",
             desc: tr(
-                "默认。中文准、速度快、内存占用小；热词交给大模型在纪要里纠正",
-                "Default. Accurate for Chinese, fast, light on memory; hotwords are corrected by the language model in the minutes. Chinese only",
+                "中文准、速度快、内存占用小；热词交给大模型在纪要里纠正",
+                "Accurate for Chinese, fast, light on memory; hotwords are corrected by the language model in the minutes. Chinese only",
             ),
             size: paraformer_downloads().iter().map(|d| d.size).sum(),
         },
         ModelInfo {
             kind: AsrKind::SenseVoice,
-            name: "SenseVoice",
+            name: "SenseVoice · ONNX",
             desc: tr(
                 "多语种：中、英、日、韩、粤语混着说也能认；纯中文会议的错字比默认模型多一些",
                 "Multilingual: Chinese, English, Japanese, Korean and Cantonese, even mixed; a few more errors than the default on all-Chinese meetings",
@@ -63,7 +65,7 @@ pub fn catalog() -> [ModelInfo; 6] {
         },
         ModelInfo {
             kind: AsrKind::FunAsrNano,
-            name: "Fun-ASR-Nano",
+            name: "Fun-ASR-Nano · ONNX",
             desc: tr(
                 "最准、断句最自然，识别时直接用上热词（人名、项目代号）；速度约为默认的 1/4，内存约 2 GB",
                 "Most accurate with the most natural sentence breaks, and uses hotwords (names, project code names) while recognizing; about 1/4 the speed of the default, about 2 GB of memory",
@@ -76,7 +78,7 @@ pub fn catalog() -> [ModelInfo; 6] {
 /// 可选模型的发布包（sherpa-onnx 打包好的，解压即用）
 fn archive(kind: AsrKind) -> Option<&'static str> {
     match kind {
-        AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 => None,
+        AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx => None,
         AsrKind::SenseVoice => Some("sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"),
         AsrKind::FunAsrNano => Some("sherpa-onnx-funasr-nano-int8-2025-12-30"),
     }
@@ -115,7 +117,7 @@ pub fn total_size() -> u64 {
 
 /// 下载一个识别模型（连同还没下载的基础模型）。`progress(已下载字节, 总字节)`。
 pub fn ensure_model(paths: &ModelPaths, kind: AsrKind, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
-    if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17) {
+    if matches!(kind, AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx) {
         let list = base_downloads();
         fetch_all(paths, &list, &mut progress)?;
         if !paths.punct().is_file() { extract_punct(&paths.dir.join("download/punct.tar.bz2"), paths.punct().parent().unwrap())?; }
@@ -152,7 +154,7 @@ pub fn ensure_model(paths: &ModelPaths, kind: AsrKind, mut progress: impl FnMut(
 
 /// 删除一个可选的识别模型（默认的 Paraformer 不删）
 pub fn remove_model(paths: &ModelPaths, kind: AsrKind) -> Result<(), String> {
-    if matches!(kind, AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17) {
+    if matches!(kind, AsrKind::Paraformer | AsrKind::AppleSpeech | AsrKind::QwenMlx | AsrKind::QwenMlx17 | AsrKind::SenseVoiceMlx | AsrKind::FunAsrNanoMlx) {
         return Err(tr("默认模型不能删除", "The default model can't be deleted").into());
     }
     fs::remove_dir_all(paths.asr_dir(kind)).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e.to_string()) })
@@ -450,6 +452,21 @@ fn extract_dir(tar_bz2: &Path, dst: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_keeps_original_and_mlx_engines() {
+        let items = catalog();
+        assert_eq!(items.len(), AsrKind::ALL.len());
+        for kind in AsrKind::ALL {
+            assert_eq!(items.iter().filter(|item| item.kind == kind).count(), 1);
+            assert_eq!(AsrKind::from_id(kind.id()), Some(kind));
+        }
+        assert!(AsrKind::SenseVoiceMlx.is_mlx());
+        assert!(AsrKind::FunAsrNanoMlx.is_mlx());
+        assert!(archive(AsrKind::SenseVoice).is_some());
+        assert!(archive(AsrKind::FunAsrNano).is_some());
+        assert!(archive(AsrKind::FunAsrNanoMlx).is_none());
+    }
 
     #[test]
     fn varint_and_entry_encoding() {
