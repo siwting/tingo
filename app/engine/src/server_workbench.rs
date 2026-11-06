@@ -147,7 +147,12 @@ pub(super) fn start_inbox(state: &Shared) {
 pub(super) async fn inbox_get(State(s): State<Shared>) -> ApiResult<Json<Value>> {
     let value = crate::workbench::read(&s.settings_dir().map_err(server_error)?.join("inbox-settings.json")).map_err(server_error)?;
     let settings: crate::inbox::Settings = serde_json::from_value(value).map_err(|e| server_error(e.to_string()))?;
-    Ok(Json(json!(settings)))
+    let errors: Vec<Value> = settings.directories.iter().filter_map(|path| {
+        std::fs::read_dir(path).err().map(|error| json!({"path":path,"error":error.to_string()}))
+    }).collect();
+    let mut value = json!(settings);
+    value["scan_errors"] = json!(errors);
+    Ok(Json(value))
 }
 pub(super) async fn inbox_put(
     State(s): State<Shared>,

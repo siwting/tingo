@@ -197,11 +197,11 @@ export async function mountInbox(root: HTMLElement): Promise<void> {
   root.classList.add("workbench");
   root.innerHTML = status;
   try {
-    const inbox = await api<{ enabled: boolean; directories: string[] }>(
+    const inbox = await api<{ enabled: boolean; directories: string[]; scan_errors?: {path: string; error: string}[] }>(
       "/api/workbench/inbox",
     );
     if (!root.isConnected) return;
-    root.innerHTML = `<h2>${t("自动导入", "Automatic import")}</h2><p class="hint">${t("监视本机目录，文件稳定两分钟后自动导入。保留源文件；失败每五分钟重试，最多三次。", "Watch local folders and import files after two stable minutes. Originals are retained. Failures retry every five minutes, up to three attempts.")}</p><label><input type="checkbox" id="enabled" ${inbox.enabled ? "checked" : ""}> ${t("启用", "Enabled")}</label><label class="field">${t("监视目录（每行一个绝对路径）", "Watched folders (one absolute path per line)")}<textarea class="textarea" rows="4" id="directories">${esc((inbox.directories ?? []).join("\n"))}</textarea></label>${button("saveInbox", t("保存", "Save"))}${status}`;
+    root.innerHTML = `<h2>${t("自动导入", "Automatic import")}</h2><p class="hint">${t("监视本机目录，文件稳定两分钟后自动导入。保留源文件；失败每五分钟重试，最多三次。", "Watch local folders and import files after two stable minutes. Originals are retained. Failures retry every five minutes, up to three attempts.")}</p><label><input type="checkbox" id="enabled" ${inbox.enabled ? "checked" : ""}> ${t("启用", "Enabled")}</label><label class="field">${t("监视目录（每行一个绝对路径）", "Watched folders (one absolute path per line)")}<textarea class="textarea" rows="4" id="directories">${esc((inbox.directories ?? []).join("\n"))}</textarea></label>${button("saveInbox", t("保存", "Save"))}${(inbox.scan_errors ?? []).map(e => `<p role="alert" class="hint">${esc(t("无法读取监听目录", "Cannot read watched folder"))}: ${esc(e.path)} — ${esc(e.error)}</p>`).join("")}${status}`;
     const { el, value, action } = controls(root);
     action("saveInbox", async () => {
       await api("/api/workbench/inbox", {
