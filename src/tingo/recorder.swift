@@ -359,6 +359,22 @@ func appleSpeech(_ args: [String]) async throws {
 #endif
 
 let args = CommandLine.arguments
+if args.count >= 2 && args[1] == "choose-directory" {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    app.activate(ignoringOtherApps: true)
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    if args.count > 2 { panel.directoryURL = URL(fileURLWithPath: args[2]) }
+    let path = panel.runModal() == .OK ? panel.url?.path : nil
+    let data = try! JSONSerialization.data(withJSONObject: ["path": path as Any? ?? NSNull()])
+    print(String(decoding: data, as: UTF8.self))
+    exit(0)
+}
+
 if args.count >= 2 && ["speech-status", "speech-install", "speech-transcribe"].contains(args[1]) {
     #if compiler(>=6.2)
     if #available(macOS 26.0, *) {

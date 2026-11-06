@@ -94,6 +94,7 @@ def valid_silence_min(value: object) -> bool:
 
 @dataclass
 class Config:
+    storage_root: str = ""
     llm: LLMConfig = field(default_factory=LLMConfig)
     hotwords: list[str] = field(default_factory=list)
     webhook: str = ""
@@ -128,6 +129,7 @@ def load() -> Config:
     silence = rec.get("auto_stop_silence_min")
     app_quit = rec.get("auto_stop_app_quit")
     cfg = Config(
+        storage_root=str(data.get("storage", {}).get("root", "")),
         llm=LLMConfig(
             base_url=llm.get("base_url", LLMConfig.base_url),
             api_key=llm.get("api_key", ""),
@@ -206,7 +208,9 @@ def save(cfg: Config) -> Path:
         f"language = {_toml_str(cfg.asr_language)}\n\n"
         "[record]\n"
         f"auto_stop_silence_min = {cfg.record.auto_stop_silence_min}\n"
-        f"auto_stop_app_quit = {_toml_bool(cfg.record.auto_stop_app_quit)}\n"
+        f"auto_stop_app_quit = {_toml_bool(cfg.record.auto_stop_app_quit)}\n\n"
+        "[storage]\n"
+        f"root = {_toml_str(cfg.storage_root)}\n"
     )
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(text, encoding="utf-8")

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Tingo",
-  "version": "0.4.3",
+  "version": "0.5.2",
   "identifier": "io.github.tancheng33.tingo",
   "build": {
     "frontendDist": "../../src/tingo/web",
@@ -48,6 +48,15 @@
     "resources": {
       "bin/tingo-recorder": "tingo-recorder",
       "../../src/tingo/sample": "sample"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJGNjBEOEIxMTlEMzRDNTMKUldSVFROTVpzZGhndnlWUVJVdGpoMXh3dHJCYmFETVBkQkJzRkRaTmtjMEdGYXpPWmhSMFlJaXEK",
+      "endpoints": [
+        "https://github.com/tancheng33/tingo/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true
     }
   }
 }

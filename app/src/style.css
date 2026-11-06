@@ -770,3 +770,14 @@ a.tag-chip.sm:hover { color: var(--blue); }
   .tabs-row { flex-wrap: wrap; gap: 12px; }
   .tabs-row .seg { flex-wrap: wrap; }
 }
+/* Meeting storage location */
+.storage-location { margin: 24px 0; padding: 20px; border: 1px solid var(--line, #e5e5eb); border-radius: 16px; }
+.storage-location > label:first-child { display: block; font-weight: 600; margin-bottom: 10px; }
+.storage-location-picker { display: flex; gap: 10px; align-items: center; }
+.storage-location-picker .input { flex: 1; min-width: 0; }
+.storage-location-picker .btn { flex-shrink: 0; }
+.storage-copy { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 14px; }
+.storage-copy input { accent-color: var(--blue); width: 16px; height: 16px; }
+.storage-location-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.storage-location progress { width: 100%; height: 6px; margin-top: 14px; accent-color: var(--blue); }
+@media (max-width: 650px) { .storage-location-picker { flex-wrap: wrap; } .storage-location-picker .input { flex-basis: 100%; } }

@@ -9,6 +9,8 @@
 //! - 录音组件：打包在 App 资源里的 tingo-recorder（Swift，ScreenCaptureKit + AVFoundation）
 //! - 示例会议：打包在 App 资源里的 sample/（新手引导里一键导入）
 
+mod updater;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,7 @@ use tauri::{Manager, State};
 
 #[derive(Default)]
 struct Backend {
+    engine: Mutex<Option<Arc<server::AppState>>>,
     url: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
 }
@@ -66,6 +69,8 @@ fn start_backend(app: &tauri::App, state: Arc<Backend>) -> Result<(), String> {
         // 内置示例会议（打包时从 src/tingo/sample 拷进资源）
         sample_dir: resources.join("sample"),
     };
+    let engine = server::AppState::new(opt);
+    *state.engine.lock().unwrap() = Some(engine.clone());
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -79,7 +84,7 @@ fn start_backend(app: &tauri::App, state: Arc<Backend>) -> Result<(), String> {
             }
         };
         rt.block_on(async move {
-            match server::serve(opt, 0).await {
+            match server::serve_state(engine, 0).await {
                 Ok((port, serve)) => {
                     *state.url.lock().unwrap() = Some(format!("http://127.0.0.1:{port}"));
                     serve.await;
@@ -96,7 +101,9 @@ pub fn run() {
     let backend = Arc::new(Backend::default());
     tauri::Builder::default()
         .manage(backend.clone())
-        .invoke_handler(tauri::generate_handler![backend_url])
+        .manage(Arc::new(updater::NativeUpdater::default()))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![backend_url, updater::native_update_check, updater::native_update_status, updater::native_update_download, updater::native_update_install])
         .setup(move |app| {
             if let Err(e) = start_backend(app, backend.clone()) {
                 *backend.error.lock().unwrap() = Some(e);

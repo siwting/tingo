@@ -828,7 +828,7 @@ def test_config_record_fields_and_validation(client, tmp_path):
     assert (
         (tmp_path / "config.toml")
         .read_text()
-        .endswith("\n\n[record]\nauto_stop_silence_min = 240\nauto_stop_app_quit = false\n")
+        .endswith('\n\n[record]\nauto_stop_silence_min = 240\nauto_stop_app_quit = false\n\n[storage]\nroot = ""\n')
     )
     for bad in (241, -1, 1.5, "10", True):
         r = client.put("/api/config", json={**body, "auto_stop_silence_min": bad})

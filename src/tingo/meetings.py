@@ -16,10 +16,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import terms
-from .config import with_legacy
+from .config import with_legacy, load, env_var
 from .transcript import Transcript, fmt_ts
 
-DEFAULT_ROOT = with_legacy(Path.home() / "Documents" / "Tingo", Path.home() / "Documents" / "jiyao")
+DEFAULT_ROOT = Path(env_var("ROOT") or load().storage_root or with_legacy(Path.home() / "Documents" / "Tingo", Path.home() / "Documents" / "jiyao")).expanduser()
 AUDIO = "录音.m4a"
 MINUTES = "纪要.md"
 TRANSCRIPT_MD = "转写.md"

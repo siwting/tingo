@@ -100,6 +100,9 @@ struct Live {
 
 pub struct AppState {
     opt: Options,
+    root: Mutex<PathBuf>,
+    storage_gate: Arc<tokio::sync::RwLock<()>>,
+    storage_progress: Mutex<crate::storage::Progress>,
     /// 当前加载的识别引擎；切换模型（或 Fun-ASR-Nano 的热词变了）时换掉
     engine: Mutex<Option<Arc<Engine>>>,
     engine_lock: Mutex<()>,
@@ -155,6 +158,9 @@ impl AppState {
         let mut saved:Vec<Job>=crate::workbench::read(&opt.root.join("jobs.json")).ok().and_then(|v|serde_json::from_value(v).ok()).unwrap_or_default();
         for job in &mut saved {if job.busy(){job.state="error".into();job.error="上次处理被中断，原文已保留，可重试".into();job.finished_at=now();}}
         let state = Arc::new(Self {
+            root: Mutex::new(opt.root.clone()),
+            storage_gate: Arc::new(tokio::sync::RwLock::new(())),
+            storage_progress: Mutex::new(crate::storage::Progress::default()),
             opt,
             engine: Mutex::new(None),
             engine_lock: Mutex::new(()),
@@ -168,10 +174,24 @@ impl AppState {
     }
 
     fn config(&self) -> Config { config::load(&self.opt.config_path) }
-    fn settings_dir(&self) -> Result<PathBuf, String> { crate::workbench::settings_dir(&self.opt.root, &self.opt.config_path) }
+    fn settings_dir(&self) -> Result<PathBuf, String> { crate::workbench::settings_dir(&self.root(), &self.opt.config_path) }
     fn processing_config(&self) -> Config {
-        let mut cfg=self.config();cfg.hotwords.extend(crate::workbench::hotwords(&self.settings_dir().unwrap_or_else(|_| self.opt.root.clone())));
+        let mut cfg=self.config();cfg.hotwords.extend(crate::workbench::hotwords(&self.settings_dir().unwrap_or_else(|_| self.root())));
         cfg.hotwords.sort();cfg.hotwords.dedup();cfg
+    }
+
+    /// Keep requests from starting new work between the idle check and application restart.
+    pub fn prepare_app_update(self: &Arc<Self>) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, String> {
+        let guard = self.storage_gate.clone().try_write_owned()
+            .map_err(|_| "正在处理请求或切换目录，请稍后再更新 / Work is in progress; try again shortly".to_string())?;
+        if self.jobs.lock().unwrap().iter().any(Job::busy) {
+            return Err("请先结束录音，并等待转写、纪要及下载任务完成 / Finish recording and wait for active tasks before updating".into());
+        }
+        Ok(guard)
+    }
+
+    fn root(&self) -> PathBuf {
+        self.root.lock().unwrap().clone()
     }
 
     fn model_paths(&self) -> ModelPaths {
@@ -222,7 +242,7 @@ impl AppState {
     }
 
     fn folder(&self, id: &str) -> ApiResult<PathBuf> {
-        let root = self.opt.root.canonicalize().map_err(|_| not_found())?;
+        let root = self.root().canonicalize().map_err(|_| not_found())?;
         let path = root.join(id).canonicalize().map_err(|_| not_found())?;
         if path.parent() != Some(root.as_path()) || !path.is_dir() {
             return Err(not_found());
@@ -352,11 +372,13 @@ impl AppState {
     }
 
     fn storage(&self) -> Value {
-        let mut v = meetings::storage(&self.opt.root, |id| self.meeting_busy(id));
-        v["next_root"] = json!(meetings::configured_root(&self.opt.config_path).unwrap_or_else(|| self.opt.root.clone()));
+        let mut v = meetings::storage(&self.root(), |id| self.meeting_busy(id));
+        v["next_root"] = json!(meetings::configured_root(&self.opt.config_path).unwrap_or_else(|| self.root()));
         v["root_overridden"] = json!(config::env_var("ROOT").is_some());
         v["models_bytes"] = meetings::size_of(&self.opt.models_dir).into();
-        v["free_bytes"] = meetings::free_bytes(&self.opt.root).into();
+        v["can_change_directory"] = json!(config::env_var("ROOT").is_none());
+        v["changing"] = json!(self.storage_progress.lock().unwrap().active);
+        v["free_bytes"] = meetings::free_bytes(&self.root()).into();
         v
     }
 
@@ -374,11 +396,11 @@ impl AppState {
                 error.get_or_insert(e);
             }
         };
-        let list = meetings::list(&self.opt.root);
+        let list = meetings::list(&self.root());
         match what {
             "leftovers" => {
                 for m in list.iter().filter(|m| !self.meeting_busy(&m.id)) {
-                    for f in meetings::leftover_files(&self.opt.root.join(&m.id)) {
+                    for f in meetings::leftover_files(&self.root().join(&m.id)) {
                         note(self.trash_files(&[f]), &mut count);
                     }
                 }
@@ -397,7 +419,7 @@ impl AppState {
                 };
                 let cutoff = chrono::Local::now().date_naive() - chrono::Days::new(days);
                 for m in &list {
-                    let dir = self.opt.root.join(&m.id);
+                    let dir = self.root().join(&m.id);
                     let old = days == 0 || meetings::meeting_date(&dir) < cutoff;
                     if !old || (archived_only && !m.archived) || self.meeting_busy(&m.id) {
                         continue;
@@ -444,8 +466,8 @@ impl AppState {
             jobs.retain(|j| !drop.contains(&j.id));
         }
         jobs.push(job);
-        std::fs::create_dir_all(&self.opt.root).map_err(|e|server_error(e.to_string()))?;
-        if let Err(e)=crate::workbench::write(&self.opt.root.join("jobs.json"),&json!(*jobs)){jobs.pop();return Err(server_error(e));}
+        std::fs::create_dir_all(&self.root()).map_err(|e|server_error(e.to_string()))?;
+        if let Err(e)=crate::workbench::write(&self.root().join("jobs.json"),&json!(*jobs)){jobs.pop();return Err(server_error(e));}
         Ok(())
     }
 
@@ -453,7 +475,7 @@ impl AppState {
         let mut jobs=self.jobs.lock().unwrap();
         if let Some(j)=jobs.iter_mut().find(|j|j.id==id){
             let before=j.state.clone();f(j);
-            if j.state!=before {if let Err(e)=crate::workbench::write(&self.opt.root.join("jobs.json"),&json!(*jobs)){eprintln!("Cannot persist task state: {e}");}}
+            if j.state!=before {if let Err(e)=crate::workbench::write(&self.root().join("jobs.json"),&json!(*jobs)){eprintln!("Cannot persist task state: {e}");}}
         }
     }
 
@@ -566,7 +588,7 @@ async fn env(State(s): State<Shared>) -> Json<Value> {
     Json(json!({
         "version": s.opt.version,
         "workbench": true,
-        "root": s.opt.root,
+        "root": s.root(),
         "ffmpeg": true, // 桌面版不需要 ffmpeg
         "system_audio": system_audio_supported(&s.opt.recorder_bin),
         "model_cached": s.model_paths().base_ready() && s.model_paths().asr_ready(s.model_paths().active()),
@@ -888,7 +910,7 @@ async fn llm_providers() -> Json<Value> {
 // ---------- 会议 ----------
 
 async fn list_meetings(State(s): State<Shared>) -> Json<Value> {
-    Json(json!(meetings::list(&s.opt.root)))
+    Json(json!(meetings::list(&s.root())))
 }
 
 fn meeting_json(dir: &Path) -> Value {
@@ -970,6 +992,83 @@ async fn post_batch(State(s): State<Shared>, Json(r): Json<BatchReq>) -> ApiResu
         .await
         .map_err(|e| server_error(e.to_string()))?
         .map(Json)
+}
+
+// Serialize library switches against requests, including requests that start background jobs.
+// The exclusive guard moves into the copy worker so disconnecting cannot unlock it early.
+async fn storage_gate(State(s): State<Shared>, req: Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path();
+    if matches!(path, "/api/storage/directory" | "/api/storage/progress") {
+        return next.run(req).await;
+    }
+    let _guard = s.storage_gate.read().await;
+    if !s.config().storage_root.is_empty() && !s.root().is_dir()
+        && !matches!(path, "/api/storage" | "/api/storage/choose" | "/api/env" | "/api/config" | "/api/jobs" | "/api/job") {
+        return bad(tr("存储目录不可用，请连接磁盘或在设置中选择其他目录", "Storage folder unavailable. Connect the disk or choose another folder in Settings")).into_response();
+    }
+    next.run(req).await
+}
+
+#[derive(Deserialize)]
+struct StorageDirectoryReq {
+    path: String,
+    copy_existing: bool,
+}
+
+async fn choose_storage(State(s): State<Shared>) -> ApiResult<Json<Value>> {
+    let value = tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new(&s.opt.recorder_bin)
+            .arg("choose-directory").arg(s.root()).output().map_err(|e| bad(e.to_string()))?;
+        if !output.status.success() { return Err(bad(String::from_utf8_lossy(&output.stderr).to_string())); }
+        serde_json::from_slice::<Value>(&output.stdout).map_err(|e| bad(e.to_string()))
+    }).await.map_err(|e| server_error(e.to_string()))??;
+    Ok(Json(value))
+}
+
+async fn storage_progress(State(s): State<Shared>) -> Json<crate::storage::Progress> {
+    Json(s.storage_progress.lock().unwrap().clone())
+}
+
+async fn change_storage(State(s): State<Shared>, Json(r): Json<StorageDirectoryReq>) -> ApiResult<Json<Value>> {
+    let guard = s.storage_gate.clone().write_owned().await;
+    if config::env_var("ROOT").is_some() {
+        return Err(bad(tr("存储目录由启动环境变量指定，无法在界面修改", "The storage folder is set by an environment variable")));
+    }
+    if s.jobs.lock().unwrap().iter().any(Job::busy) {
+        return Err(ApiError(StatusCode::CONFLICT, tr("有任务正在进行，请完成录音、转写或纪要生成后再切换目录", "Wait for recording, transcription and other tasks to finish before switching folders").into()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        let source = s.root();
+        let target = crate::storage::destination(&source, &r.path).map_err(bad)?;
+        let settings_dir = s.settings_dir().map_err(server_error)?;
+        let settings: crate::inbox::Settings = serde_json::from_value(crate::workbench::read(&settings_dir.join("inbox-settings.json")).map_err(server_error)?).map_err(|e| bad(e.to_string()))?;
+        for watched in settings.directories {
+            if watched.canonicalize().is_ok_and(|d| target.starts_with(d)) {
+                return Err(bad(tr("会议目录不能位于自动导入目录内，避免重复导入", "The library cannot be inside a watched folder")));
+            }
+        }
+        if source.canonicalize().ok().as_ref() == Some(&target) { return Ok(Json(json!({"root": target}))); }
+        *s.storage_progress.lock().unwrap() = crate::storage::Progress { active: true, ..Default::default() };
+        let result = (|| {
+            if r.copy_existing {
+                crate::storage::copy_library(&source, &target, |copied, total| {
+                    let mut p = s.storage_progress.lock().unwrap();
+                    p.copied_bytes = copied;
+                    p.total_bytes = total;
+                }).map_err(bad)?;
+            }
+            let mut cfg = s.config();
+            cfg.storage_root = target.to_str().ok_or_else(|| bad("Invalid folder name"))?.to_string();
+            config::save(&s.opt.config_path, &cfg).map_err(|e| bad(e.to_string()))?;
+            *s.root.lock().unwrap() = target.clone();
+            // Finished jobs belong to the previous library and may reuse IDs in the new one.
+            s.jobs.lock().unwrap().clear();
+            Ok(Json(json!({"root": target})))
+        })();
+        s.storage_progress.lock().unwrap().active = false;
+        result
+    }).await.map_err(|e| server_error(e.to_string()))?
 }
 
 async fn get_storage(State(s): State<Shared>) -> ApiResult<Json<Value>> {
@@ -1313,7 +1412,7 @@ async fn search(State(s): State<Shared>, Query(p): Query<SearchQuery>) -> ApiRes
     if p.q.trim().is_empty() {
         return Err(bad(tr("搜索词不能为空", "Enter something to search for")));
     }
-    let root = s.opt.root.clone();
+    let root = s.root();
     let lang = i18n::ui();
     let v = tokio::task::spawn_blocking(move || terms::search(&root, &p.q, lang))
         .await
@@ -1331,7 +1430,7 @@ fn demo_folder(en: bool) -> String {
 async fn post_demo(State(s): State<Shared>) -> ApiResult<Json<Value>> {
     let en = i18n::is_en();
     let name = demo_folder(en);
-    let dir = s.opt.root.join(&name);
+    let dir = s.root().join(&name);
     if dir.exists() {
         return Ok(Json(json!({"id": name})));
     }
@@ -1396,7 +1495,7 @@ async fn record_start(State(s): State<Shared>, Json(r): Json<RecordReq>) -> ApiR
     }
     let engine = s.engine().map_err(bad)?; // 边录边转需要模型；没下载就先提示下载
     let system = r.system && system_audio_supported(&s.opt.recorder_bin);
-    let dir = meetings::new_folder(&s.opt.root, &r.title, chrono::Local::now().naive_local());
+    let dir = meetings::new_folder(&s.root(), &r.title, chrono::Local::now().naive_local());
     let name = dir.file_name().unwrap().to_string_lossy().into_owned();
     let mut job = Job::new("record", &name, "recording");
     s.start_job(job.clone())?;
@@ -1503,7 +1602,7 @@ fn stop_recording(s: &Shared, only: Option<&str>, notice: Option<String>, keep_s
             j.notice = n;
         }
     });
-    let dir = s.opt.root.join(&job.meeting);
+    let dir = s.root().join(&job.meeting);
     spawn_job(s, &job.id, move |st, id| {
         live.recorder.stop();
         if let Some(keep) = keep_s {
@@ -1681,7 +1780,7 @@ async fn import_file(State(s): State<Shared>, mut form: Multipart) -> ApiResult<
         .unwrap_or("会议")
         .to_string();
     let dir = meetings::new_folder(
-        &s.opt.root,
+        &s.root(),
         if title.is_empty() { &stem } else { &title },
         when,
     );
@@ -1723,7 +1822,7 @@ fn job_json(s: &AppState, job: &Job) -> Value {
     data["elapsed"] = (end - job.started_at).into();
     data["model_loaded"] = s.engine_loaded().into();
     if job.state == "recording" {
-        let dir = s.opt.root.join(&job.meeting);
+        let dir = s.root().join(&job.meeting);
         let levels: BTreeMap<&str, f32> = job
             .sources
             .iter()
@@ -1765,14 +1864,14 @@ fn job_json(s: &AppState, job: &Job) -> Value {
 /// 收起所有已结束的任务
 async fn dismiss(State(s): State<Shared>) -> Json<Value> {
     let mut jobs=s.jobs.lock().unwrap();jobs.retain(Job::busy);
-    let _=crate::workbench::write(&s.opt.root.join("jobs.json"),&json!(*jobs));
+    let _=crate::workbench::write(&s.root().join("jobs.json"),&json!(*jobs));
     Json(json!({"ok": true}))
 }
 
 /// 收起一个已结束的任务
 async fn dismiss_one(State(s): State<Shared>, UrlPath(id): UrlPath<String>) -> Json<Value> {
     let mut jobs=s.jobs.lock().unwrap();jobs.retain(|j| j.busy() || j.id != id);
-    let _=crate::workbench::write(&s.opt.root.join("jobs.json"),&json!(*jobs));
+    let _=crate::workbench::write(&s.root().join("jobs.json"),&json!(*jobs));
     Json(json!({"ok": true}))
 }
 
@@ -1907,20 +2006,30 @@ async fn download_models(State(s): State<Shared>) -> ApiResult<Json<Job>> {
 const UPDATE_TTL: Duration = Duration::from_secs(6 * 3600);
 
 /// 最新 Release；6 小时内查过就用上次的结果
-fn latest_release(s: &AppState) -> Result<update::Release, String> {
+fn latest_release(s: &AppState, force: bool) -> Result<update::Release, String> {
+    latest_release_with(s, force, || update::fetch_latest(&s.opt.version))
+}
+
+fn latest_release_with(s: &AppState, force: bool, fetch: impl FnOnce() -> Result<update::Release, String>) -> Result<update::Release, String> {
     if let Some((at, r)) = s.update.lock().unwrap().as_ref() {
-        if at.elapsed() < UPDATE_TTL {
+        if !force && at.elapsed() < UPDATE_TTL {
             return Ok(r.clone());
         }
     }
-    let r = update::fetch_latest(&s.opt.version)?;
+    let r = fetch()?;
     *s.update.lock().unwrap() = Some((Instant::now(), r.clone()));
     Ok(r)
 }
 
-async fn get_update(State(s): State<Shared>) -> Json<Value> {
+#[derive(Deserialize, Default)]
+struct UpdateQuery {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn get_update(State(s): State<Shared>, Query(query): Query<UpdateQuery>) -> Json<Value> {
     let s2 = s.clone();
-    let r = tokio::task::spawn_blocking(move || latest_release(&s2))
+    let r = tokio::task::spawn_blocking(move || latest_release(&s2, query.force))
         .await
         .map_err(|e| e.to_string())
         .and_then(|r| r);
@@ -1934,7 +2043,7 @@ async fn get_update(State(s): State<Shared>) -> Json<Value> {
 /// 下载新版安装包到「下载」文件夹，校验 sha256 后打开（自动挂载，在访达里显示）
 async fn download_update(State(s): State<Shared>) -> ApiResult<Json<Job>> {
     let s2 = s.clone();
-    let r = tokio::task::spawn_blocking(move || latest_release(&s2))
+    let r = tokio::task::spawn_blocking(move || latest_release(&s2, false))
         .await
         .map_err(|e| bad(e.to_string()))?
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
@@ -2017,6 +2126,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/meetings/{id}/meta", put(put_meta))
         .route("/api/storage", get(get_storage))
         .route("/api/storage/location", put(storage_location))
+        .route("/api/storage/choose", post(choose_storage))
+        .route("/api/storage/directory", post(change_storage))
+        .route("/api/storage/progress", get(storage_progress))
         .route("/api/storage/cleanup", post(post_cleanup))
         .route("/api/meetings/{id}/speakers", put(put_speakers))
         .route("/api/meetings/{id}/minutes", put(put_minutes))
@@ -2050,6 +2162,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/models/{id}/download", post(download_model))
         .route("/api/models/{id}/use", post(use_model))
         .route("/api/models/{id}", delete(delete_model))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), storage_gate))
         .layer(axum::extract::DefaultBodyLimit::max(4 << 30)) // 导入的录屏可能有几个 GB
         .layer(axum::middleware::from_fn(i18n::layer)) // 每个请求都记下界面语言
         .layer(cors)
@@ -2061,9 +2174,16 @@ pub async fn serve(
     opt: Options,
     port: u16,
 ) -> std::io::Result<(u16, impl std::future::Future<Output = ()>)> {
+    serve_state(AppState::new(opt), port).await
+}
+
+pub async fn serve_state(
+    state: Arc<AppState>,
+    port: u16,
+) -> std::io::Result<(u16, impl std::future::Future<Output = ()>)> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let port = listener.local_addr()?.port();
-    let app = router(AppState::new(opt));
+    let app = router(state);
     Ok((port, async move {
         let _ = axum::serve(listener, app).await;
     }))
@@ -2106,6 +2226,99 @@ mod tests {
             sample_dir: base.join("sample"),
         });
         (state, root, trash)
+    }
+
+    #[tokio::test]
+    async fn update_install_excludes_active_jobs_and_new_requests() {
+        let (s, root, _) = test_state("install-update");
+        mark_busy(&s, "meeting");
+        assert!(s.prepare_app_update().is_err());
+        s.jobs.lock().unwrap().clear();
+        let read = s.storage_gate.read().await;
+        assert!(s.prepare_app_update().is_err());
+        drop(read);
+        let install = s.prepare_app_update().unwrap();
+        assert!(s.storage_gate.try_read().is_err());
+        assert!(s.prepare_app_update().is_err());
+        drop(install);
+        assert!(s.storage_gate.try_read().is_ok());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn manual_update_check_bypasses_backend_cache() {
+        let (s, root, _) = test_state("update-cache");
+        let old = update::Release { latest: "0.5.0".into(), ..Default::default() };
+        *s.update.lock().unwrap() = Some((Instant::now(), old.clone()));
+        assert_eq!(latest_release_with(&s, false, || panic!("automatic checks should use cache")).unwrap(), old);
+        let new = update::Release { latest: "0.5.1".into(), ..Default::default() };
+        assert_eq!(latest_release_with(&s, true, || Ok(new.clone())).unwrap(), new);
+        assert_eq!(latest_release_with(&s, false, || panic!("fresh result should be cached")).unwrap(), new);
+        assert!(latest_release_with(&s, true, || Err("offline".into())).is_err());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_copy_switch_preserves_history_and_configuration() {
+        let (s, root, _) = test_state("directory-switch");
+        let target = root.parent().unwrap().join("新目录");
+        std::fs::create_dir(&target).unwrap();
+        let dir = meeting(&root, "2026-10-01_0900_a", &[("录音.m4a", 123), (MINUTES, 20)]);
+        std::fs::create_dir(dir.join("minutes-history")).unwrap();
+        std::fs::write(dir.join("minutes-history/123.json"), "history").unwrap();
+        let modified = std::fs::metadata(dir.join(MINUTES)).unwrap().modified().unwrap();
+        let request = || Json(StorageDirectoryReq { path: target.to_string_lossy().into(), copy_existing: true });
+        mark_busy(&s, "2026-10-01_0900_a");
+        assert_eq!(status(change_storage(State(s.clone()), request()).await), StatusCode::CONFLICT);
+        assert_eq!(s.root(), root);
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none());
+        s.jobs.lock().unwrap().clear();
+        let _ = change_storage(State(s.clone()), request()).await.unwrap();
+        assert_eq!(s.root(), target.canonicalize().unwrap());
+        assert_eq!(PathBuf::from(s.config().storage_root), s.root());
+        let copied = target.join("2026-10-01_0900_a");
+        assert_eq!(std::fs::read(copied.join("minutes-history/123.json")).unwrap(), b"history");
+        assert_eq!(std::fs::metadata(copied.join(MINUTES)).unwrap().modified().unwrap(), modified);
+        assert!(dir.join("录音.m4a").exists());
+        assert!(!s.storage_progress.lock().unwrap().active);
+        // Switching back without copying restores the original library immediately.
+        let _ = change_storage(State(s.clone()), Json(StorageDirectoryReq { path: root.to_string_lossy().into(), copy_existing: false })).await.unwrap();
+        assert_eq!(s.root(), root.canonicalize().unwrap());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_rejects_conflicts_nested_folders_and_links() {
+        let (s, root, _) = test_state("directory-errors");
+        let target = root.parent().unwrap().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "keep").unwrap();
+        let request = || Json(StorageDirectoryReq { path: target.to_string_lossy().into(), copy_existing: true });
+        assert!(change_storage(State(s.clone()), request()).await.is_err());
+        assert_eq!(std::fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
+        assert_eq!(s.root(), root);
+        std::fs::remove_file(target.join("keep.txt")).unwrap();
+        let nested = root.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        assert!(crate::storage::destination(&root, nested.to_str().unwrap()).is_err());
+        assert!(crate::storage::destination(&root, root.parent().unwrap().to_str().unwrap()).is_err());
+        std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+        assert!(change_storage(State(s.clone()), request()).await.is_err());
+        assert_eq!(s.root(), root);
+        assert!(!s.opt.config_path.exists());
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn storage_failed_config_save_does_not_switch() {
+        let (s, root, _) = test_state("directory-config-error");
+        let target = root.parent().unwrap().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&s.opt.config_path).unwrap(); // cannot replace a directory with a config file
+        assert!(change_storage(State(s.clone()), Json(StorageDirectoryReq { path: target.to_string_lossy().into(), copy_existing: false })).await.is_err());
+        assert_eq!(s.root(), root);
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
@@ -2315,6 +2528,34 @@ mod tests {
         mark_busy(&s, "2026-10-01_0900_keep");
         assert!(storage_location(State(s.clone()), Json(json!({"root":root}))).await.is_err());
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn live_switch_keeps_workbench_preferences_and_moves_job_writes() {
+        let (s, root, _) = test_state("live-workbench-switch");
+        let watched = root.parent().unwrap().join("watched");
+        let target = root.parent().unwrap().join("target");
+        std::fs::create_dir_all(&watched).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let terms = json!([{"name":"正式名称","aliases":["真实称呼"],"errors":[],"enabled":true}]);
+        crate::workbench::write(&root.join("glossary.json"), &terms).unwrap();
+        crate::workbench::write(&root.join("inbox-settings.json"), &json!({"enabled":true,"directories":[watched]})).unwrap();
+        // A legacy location must not override the newly selected config on restart.
+        crate::workbench::write(&s.opt.config_path.with_file_name("library.json"), &json!({"root":root})).unwrap();
+        let settings = s.settings_dir().unwrap();
+        let _ = change_storage(State(s.clone()), Json(StorageDirectoryReq {path:target.to_string_lossy().into(),copy_existing:false})).await.unwrap();
+        assert_eq!(s.settings_dir().unwrap(), settings);
+        assert_eq!(glossary_get(State(s.clone())).await.unwrap().0, terms);
+        assert!(s.processing_config().hotwords.contains(&"真实称呼".to_string()));
+        assert_eq!(PathBuf::from(s.config().storage_root), target.canonicalize().unwrap());
+        s.start_job(Job::new("test", "meeting", "done")).unwrap();
+        assert!(target.join("jobs.json").is_file());
+        assert!(!root.join("jobs.json").exists());
+        let nested = watched.join("library");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(change_storage(State(s.clone()), Json(StorageDirectoryReq {path:nested.to_string_lossy().into(),copy_existing:false})).await.is_err());
+        assert_eq!(s.root(), target.canonicalize().unwrap());
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

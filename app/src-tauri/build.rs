@@ -19,5 +19,19 @@ fn main() {
             .expect("需要 Xcode Command Line Tools（swiftc）来编译录音组件");
         assert!(status.success(), "录音组件编译失败");
     }
+    // 公证也检查 Resources 中的 Swift 可执行文件，因此必须在封装 App 前签名。
+    println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+    println!("cargo:rerun-if-changed=Entitlements.plist");
+    if let Ok(identity) = std::env::var("APPLE_SIGNING_IDENTITY") {
+        if !identity.is_empty() && identity != "-" {
+            let status = Command::new("codesign")
+                .args(["--force", "--sign", &identity, "--timestamp", "--options", "runtime",
+                    "--identifier", "io.github.tancheng33.tingo.recorder",
+                    "--entitlements", "Entitlements.plist", out.to_str().unwrap()])
+                .status()
+                .expect("无法启动 codesign");
+            assert!(status.success(), "录音组件正式签名失败");
+        }
+    }
     tauri_build::build()
 }

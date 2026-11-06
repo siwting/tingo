@@ -17,6 +17,7 @@ pub mod push;
 pub mod record;
 pub mod server;
 pub mod speakers;
+pub mod storage;
 pub mod summarize;
 pub mod terms;
 pub mod transcript;

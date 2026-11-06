@@ -40,6 +40,7 @@ impl Default for ObsidianConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    pub storage_root: String,
     pub llm: LlmConfig,
     pub hotwords: Vec<String>,
     pub webhook: String,
@@ -60,6 +61,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            storage_root: String::new(),
             llm: LlmConfig::default(),
             hotwords: Vec::new(),
             webhook: String::new(),
@@ -122,7 +124,14 @@ struct RawRecord {
 }
 
 #[derive(Deserialize, Default)]
+struct RawStorage {
+    root: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
 struct Raw {
+    #[serde(default)]
+    storage: RawStorage,
     hotwords: Option<Vec<String>>,
     #[serde(default)]
     llm: RawLlm,
@@ -184,6 +193,7 @@ pub fn load(path: &Path) -> Config {
         .unwrap_or_default();
     let d = LlmConfig::default();
     let mut cfg = Config {
+        storage_root: raw.storage.root.unwrap_or_default(),
         llm: LlmConfig {
             base_url: raw.llm.base_url.unwrap_or(d.base_url),
             api_key: raw.llm.api_key.unwrap_or_default(),
@@ -249,7 +259,7 @@ fn quote(s: &str) -> String {
 pub fn save(path: &Path, cfg: &Config) -> std::io::Result<()> {
     let words: Vec<String> = cfg.hotwords.iter().map(|w| quote(w)).collect();
     let text = format!(
-        "# tingo 配置，由图形界面写入；也可以直接编辑。\n\n# 专有名词、人名、项目代号，提高识别准确率\nhotwords = [{}]\n\n[llm]\nbase_url = {}\napi_key = {}\nmodel = {}\napi = {}\n\n[push]\nwebhook = {}\nsecret = {}\n\n[obsidian]\nvault = {}\nfolder = {}\nauto = {}\ntranscript = {}\n\n[ui]\nlanguage = {}\n\n[minutes]\nlanguage = {}\n\n[asr]\nlanguage = {}\n\n[record]\nauto_stop_silence_min = {}\nauto_stop_app_quit = {}\n",
+        "# tingo 配置，由图形界面写入；也可以直接编辑。\n\n# 专有名词、人名、项目代号，提高识别准确率\nhotwords = [{}]\n\n[llm]\nbase_url = {}\napi_key = {}\nmodel = {}\napi = {}\n\n[push]\nwebhook = {}\nsecret = {}\n\n[obsidian]\nvault = {}\nfolder = {}\nauto = {}\ntranscript = {}\n\n[ui]\nlanguage = {}\n\n[minutes]\nlanguage = {}\n\n[asr]\nlanguage = {}\n\n[record]\nauto_stop_silence_min = {}\nauto_stop_app_quit = {}\n\n[storage]\nroot = {}\n",
         words.join(", "),
         quote(&cfg.llm.base_url),
         quote(&cfg.llm.api_key),
@@ -266,17 +276,29 @@ pub fn save(path: &Path, cfg: &Config) -> std::io::Result<()> {
         quote(&cfg.asr_language),
         cfg.auto_stop_silence_min,
         cfg.auto_stop_app_quit,
+        quote(&cfg.storage_root),
     );
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, text)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        // 里面有 API key
-    }
+    static NEXT_SAVE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!("toml.{}.{}.tmp", std::process::id(), NEXT_SAVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let result = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600); // API keys must never be world-readable, including the temporary file.
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    result?;
     Ok(())
 }
 
@@ -300,6 +322,7 @@ mod tests {
                 model: "deepseek/deepseek-v4-flash".into(),
                 api: "anthropic".into(),
             },
+            storage_root: "/Volumes/会议资料/Tingo".into(),
             hotwords: vec!["星河".into(), "Kafka".into()],
             webhook: "".into(),
             webhook_secret: "".into(),
@@ -307,6 +330,7 @@ mod tests {
             ..Default::default()
         };
         save(&p, &cfg).unwrap();
+        assert_eq!(load(&p).storage_root, cfg.storage_root);
         assert_eq!(load(&p).llm, cfg.llm);
         assert_eq!(load(&p).obsidian, cfg.obsidian);
         assert_eq!(load(&p).hotwords, cfg.hotwords);
@@ -338,7 +362,7 @@ mod tests {
         // 写在 [obsidian] 之后，顺序 [ui]、[minutes]、[asr]
         let pos = |k: &str| text.find(k).unwrap();
         assert!(pos("[obsidian]") < pos("[ui]") && pos("[ui]") < pos("[minutes]") && pos("[minutes]") < pos("[asr]"));
-        assert!(text.ends_with("transcript = true\n\n[ui]\nlanguage = \"en\"\n\n[minutes]\nlanguage = \"zh\"\n\n[asr]\nlanguage = \"auto\"\n\n[record]\nauto_stop_silence_min = 10\nauto_stop_app_quit = true\n"));
+        assert!(text.contains("transcript = true\n\n[ui]\nlanguage = \"en\"\n\n[minutes]\nlanguage = \"zh\"\n\n[asr]\nlanguage = \"auto\"\n\n[record]\nauto_stop_silence_min = 10\nauto_stop_app_quit = true\n"));
         let c = load(&p);
         assert_eq!((c.ui_language.as_str(), c.minutes_language.as_str(), c.asr_language.as_str()), ("en", "zh", "auto"));
         // 老配置没有这三节、或者填了不认识的值：用默认
@@ -354,7 +378,7 @@ mod tests {
         save(&p, &cfg).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         // 接在 [asr] 之后，格式固定
-        assert!(text.ends_with("[asr]\nlanguage = \"zh\"\n\n[record]\nauto_stop_silence_min = 0\nauto_stop_app_quit = false\n"));
+        assert!(text.contains("[asr]\nlanguage = \"zh\"\n\n[record]\nauto_stop_silence_min = 0\nauto_stop_app_quit = false\n"));
         let c = load(&p);
         assert_eq!((c.auto_stop_silence_min, c.auto_stop_app_quit), (0, false));
         save(&p, &Config { auto_stop_silence_min: 240, ..Default::default() }).unwrap();

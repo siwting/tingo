@@ -13,6 +13,7 @@ RUST_SAVED = (
     '[obsidian]\nvault = "/Users/a/笔记"\nfolder = "会议"\nauto = false\ntranscript = true\n'
     '\n[ui]\nlanguage = "auto"\n\n[minutes]\nlanguage = "auto"\n\n[asr]\nlanguage = "zh"\n'
     "\n[record]\nauto_stop_silence_min = 10\nauto_stop_app_quit = true\n"
+    '\n[storage]\nroot = ""\n'
 )
 
 
@@ -56,7 +57,7 @@ def test_language_sections_roundtrip_and_defaults():
     cfg = Config(ui_language="en", minutes_language="zh", asr_language="auto")
     config.save(cfg)
     text = config.CONFIG_PATH.read_text(encoding="utf-8")
-    assert text.endswith(
+    assert text.removesuffix('\n[storage]\nroot = ""\n').endswith(
         '[ui]\nlanguage = "en"\n\n[minutes]\nlanguage = "zh"\n\n[asr]\nlanguage = "auto"\n'
         "\n[record]\nauto_stop_silence_min = 10\nauto_stop_app_quit = true\n"
     )
@@ -96,7 +97,7 @@ def test_record_section_roundtrip_defaults_and_validation():
     cfg = Config(record=RecordConfig(0, False))
     config.save(cfg)
     text = config.CONFIG_PATH.read_text(encoding="utf-8")
-    assert text.endswith('[asr]\nlanguage = "zh"\n\n[record]\nauto_stop_silence_min = 0\nauto_stop_app_quit = false\n')
+    assert text.removesuffix('\n[storage]\nroot = ""\n').endswith('[asr]\nlanguage = "zh"\n\n[record]\nauto_stop_silence_min = 0\nauto_stop_app_quit = false\n')
     assert config.load() == cfg
     # 老配置没有这一节、值不合法：用默认
     config.CONFIG_PATH.write_text('[llm]\nmodel = "m"\n')
@@ -108,3 +109,13 @@ def test_record_section_roundtrip_defaults_and_validation():
     assert config.load().record == RecordConfig(240, True)
     config.CONFIG_PATH.write_text("record = 3\n")
     assert config.load().record == RecordConfig(10, True)
+
+
+def test_storage_survives_other_setting_changes():
+    cfg = Config(storage_root='/Volumes/会议资料/Tingo')
+    config.save(cfg)
+    restored = config.load()
+    assert restored.storage_root == cfg.storage_root
+    restored.llm.model = 'new-model'
+    config.save(restored)
+    assert config.load().storage_root == cfg.storage_root

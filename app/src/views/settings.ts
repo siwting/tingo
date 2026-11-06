@@ -540,6 +540,7 @@ function panelAsr(x: Ctx): void {
 }
 
 interface Storage {
+  can_change_directory?: boolean;
   root: string;
   next_root?: string;
   root_overridden?: boolean;
@@ -575,7 +576,15 @@ async function panelStorage(): Promise<void> {
   panel.innerHTML = `
     <h2>${t("存储", "Storage")}</h2>
     <p class="hint">${t(`会议保存在 ${esc(st.root)}，磁盘还剩 ${fmtBytes(st.free_bytes)}。删除的东西都会进废纸篓，清空废纸篓后才真正腾出空间。`, `Meetings live in ${esc(st.root)}; ${fmtBytes(st.free_bytes)} free on this disk. Everything deleted goes to the Trash — empty it to actually free the space.`)}</p>
-    <p class="hint">${t(`Tingo 文件占用 ${fmtBytes(total)}；下方显示这些文件的组成，并非磁盘使用率。`, `Tingo files use ${fmtBytes(total)}. The bar shows their composition, not disk capacity.`)}</p><div class="st-bar">
+    ${st.can_change_directory ? `<div class="storage-location">
+      <label for="stPath">${t("会议存储目录", "Meeting folder")}</label>
+      <div class="storage-location-picker"><input class="input" id="stPath" value="${esc(st.root)}" aria-label="${t("会议存储目录", "Meeting folder")}"><button class="btn" id="stChoose">${ICON.folder} ${t("选择文件夹", "Choose folder")}</button></div>
+      <label class="storage-copy"><input type="checkbox" id="stCopy" checked> ${t("将已有会议复制到新目录", "Copy existing meetings to the new folder")}</label>
+      <p class="hint">${t("录音、转写、纪要及历史版本一起保存。复制需选择空文件夹，原文件会保留。识别模型的位置不变。", "Recordings, transcripts, minutes and history stay together. Copying requires an empty folder; originals are kept. Speech models stay in their current location.")}</p>
+      <div class="storage-location-actions"><button class="btn primary" id="stApply" disabled>${t("保存并切换", "Save and switch")}</button><span class="hint" id="stStatus" role="status" aria-live="polite"></span></div>
+      <progress id="stProgress" hidden max="100"></progress>
+    </div>` : ""}
+<p class="hint">${t(`Tingo 文件占用 ${fmtBytes(total)}；下方显示这些文件的组成，并非磁盘使用率。`, `Tingo files use ${fmtBytes(total)}. The bar shows their composition, not disk capacity.`)}</p><div class="st-bar">
       <i class="a" style="width:${pct(st.audio_bytes)}%"></i><i class="b" style="width:${pct(other)}%"></i>${st.models_bytes ? `<i class="c" style="width:${pct(st.models_bytes)}%"></i>` : ""}
     </div>
     <div class="st-legend">
@@ -584,9 +593,6 @@ async function panelStorage(): Promise<void> {
       ${st.models_bytes != null ? `<span><i class="c"></i>${t("识别模型", "Speech models")} <b>${fmtBytes(st.models_bytes)}</b></span>` : ""}
     </div>
 
-    <div class="field" style="margin-top:24px"><label for="storageRoot">${t("会议保存目录", "Meeting library location")}</label><input class="input" id="storageRoot" value="${esc(st.next_root ?? st.root)}" ${st.root_overridden || !S.env?.workbench ? "disabled" : ""}></div>
-    <p class="hint">${t("修改后重启 App 生效。自动导入目录、热词及其他设置保持不变。现有会议保留在原目录，可切回查看；Web 服务也需重启。", "Restart the app after saving. Watched folders, hotwords and other settings are retained. Existing meetings stay in their original folder; switch back to view them. Restart the web service too.")}</p>
-    <button class="btn" id="storageSave" ${st.root_overridden || !S.env?.workbench ? "disabled" : ""}>${t("保存目录", "Save location")}</button><span class="hint" id="storageResult"></span>
     <h3 class="st-h">${t("清理", "Clean up")}</h3>
     <div class="st-row">
       <div><b>${t("残留文件", "Leftover files")}</b><small>${t("合成录音失败前留下的原始音轨、没下完的临时文件", "Raw tracks left behind when merging failed, unfinished temp files")}</small></div>
@@ -616,20 +622,72 @@ async function panelStorage(): Promise<void> {
             .join("")
         : `<p class="hint">${t("还没有会议", "No meetings yet")}</p>`
     }</div>`;
-  $("#storageSave").onclick = async () => {
-    try {
-      await api("/api/storage/location", {
-        method: "PUT",
-        json: { root: $<HTMLInputElement>("#storageRoot").value.trim() },
-      });
-      $("#storageResult").textContent = t(
-        "已保存，请重启 App。原目录中的会议保持不变。",
-        "Saved. Restart the app. Meetings in the old folder are unchanged.",
-      );
-    } catch (e) {
-      $("#storageResult").textContent = errorMessage(e);
-    }
-  };
+  if (st.can_change_directory) {
+    const path = $<HTMLInputElement>("#stPath");
+    const copy = $<HTMLInputElement>("#stCopy");
+    const choose = $<HTMLButtonElement>("#stChoose");
+    const apply = $<HTMLButtonElement>("#stApply");
+    const status = $("#stStatus");
+    const progress = $<HTMLProgressElement>("#stProgress");
+    let working = false;
+    const update = () => { apply.disabled = working || !path.value.trim() || path.value.trim() === st.root; };
+    path.oninput = update;
+    choose.onclick = async () => {
+      choose.disabled = true;
+      try {
+        const selected = await api<{ path: string | null }>("/api/storage/choose", { json: {} });
+        if (selected.path) path.value = selected.path;
+        update();
+      } catch (e) { toast(errorMessage(e), true); }
+      finally { choose.disabled = false; }
+    };
+    apply.onclick = async () => {
+      if (S.jobs.some(isBusy) || isBusy(S.job)) {
+        toast(t("请等正在进行的任务完成后再切换", "Wait for current tasks to finish before switching"), true);
+        return;
+      }
+      const destination = path.value.trim();
+      const copyExisting = copy.checked;
+      if (!(await confirmBox(t("切换会议存储目录？", "Switch meeting folder?"),
+        copyExisting ? t(`将会议复制到 ${destination}，完成后切换。原目录保留，请勿在复制期间退出 Tingo。`, `Copy meetings to ${destination}, then switch. Originals are kept. Keep Tingo open until finished.`)
+        : t(`切换到 ${destination}。只显示新目录中的会议；旧会议保留原处，可切回原目录查看。`, `Switch to ${destination}. Only meetings in that folder will be shown; you can switch back to see the originals.`), t("确认切换", "Switch folder")))) return;
+      working = true;
+      path.disabled = copy.disabled = choose.disabled = true;
+      update();
+      progress.hidden = false;
+      progress.removeAttribute("value");
+      status.textContent = t("正在检查目录…", "Checking folder…");
+      const poll = async () => {
+        try {
+          const p = await api<{ active: boolean; copied_bytes: number; total_bytes: number }>("/api/storage/progress");
+          if (!working || !p.active) return;
+          if (p.total_bytes) {
+            progress.value = Math.min(100, p.copied_bytes / p.total_bytes * 100);
+            status.textContent = t(`复制并校验 ${fmtBytes(p.copied_bytes)} / ${fmtBytes(p.total_bytes)}`, `Copying and verifying ${fmtBytes(p.copied_bytes)} / ${fmtBytes(p.total_bytes)}`);
+          }
+        } catch { /* the final request reports errors */ }
+      };
+      const timer = window.setInterval(() => void poll(), 700);
+      try {
+        await api("/api/storage/directory", { json: { path: destination, copy_existing: copyExisting } });
+        S.detail = null;
+        S.jobs = [];
+        S.job = { state: "idle" };
+        await Promise.all([refreshEnv(), refreshMeetings()]);
+        toast(t("存储目录已切换，原目录文件保留", "Folder changed. Original files are kept."));
+        if (path.isConnected) await panelStorage();
+      } catch (e) {
+        status.textContent = errorMessage(e);
+        toast(errorMessage(e), true);
+      } finally {
+        working = false;
+        clearInterval(timer);
+        path.disabled = copy.disabled = choose.disabled = false;
+        progress.hidden = true;
+        update();
+      }
+    };
+  }
   const days = bindSeg("stDays");
   $("#stArch").onclick = () => $("#stArch").classList.toggle("on");
   const run = async (body: unknown, what: string) => {

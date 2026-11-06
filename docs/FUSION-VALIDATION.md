@@ -84,3 +84,11 @@ CLI 分类调整：实际界面验证两种 CLI 选择保存、切换到 Claude 
 - Downloaded both new models into the existing App model directory. Both passed real synthetic Chinese speech through native decode/VAD/MLX/CAM++/clustering. Long meeting accuracy/performance was not benchmarked.
 - 86 native tests passed outside sandbox (the sandbox cannot perform the AAC encoder test). Extended model status test separately verifies all models are visible before installation, unready models cannot be selected, and both new installed model IDs can be selected and persist.
 - TypeScript/Vite build and debug App bundle passed. Restarted App; settings shows eight models, both newly installed MLX models offer Use, all three original ONNX models offer Download. Current Qwen selection retained.
+
+## Upstream v0.5.2 merge (2026-11-06)
+
+- Merged official `tancheng33/tingo` main at `fa4caa5` (v0.5.2); preserved the read-only browser router, eight ASR choices, CLI providers and meeting analysis/task layout.
+- Adopted live meeting-folder switching and verified copying. Workbench inbox, questions and job persistence now follow the active root. Global settings are initialized before switching and watched-folder recursion is rejected. New config storage selection takes priority over legacy `library.json`; the legacy API remains compatible.
+- Retained native updater implementation, but custom builds reject official-binary check/download/install commands: installing an upstream binary would discard this branch's workbench features. Future custom releases need a separate update distribution.
+- Validation: 91 existing Rust tests passed (AAC test rerun outside sandbox), plus the new live-switch regression; 56 Python config/server tests and five frontend tests passed. TypeScript/Vite and final debug macOS App build passed; bundle version is 0.5.2 and codesign verification passed.
+- Built artifact: `app/src-tauri/target/debug/bundle/macos/Tingo.app`. This merge did not replace the installed App, exercise real-library switching, or perform a new device transcription test. Local signing only; no Apple notarization.

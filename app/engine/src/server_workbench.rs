@@ -8,6 +8,7 @@ pub(super) fn start_inbox(state: &Shared) {
         let Some(s) = weak.upgrade() else {
             break;
         };
+        let Ok(_storage_guard) = s.storage_gate.try_read() else { continue; };
         let Ok(settings_dir) = s.settings_dir() else { continue; };
         let settings_path = settings_dir.join("inbox-settings.json");
         let settings = crate::workbench::read(&settings_path)
@@ -35,13 +36,13 @@ pub(super) fn start_inbox(state: &Shared) {
             let key = file.to_string_lossy().to_string();
             if index[&key]["signature"].as_str() != Some(&signature) {
                 index[&key] =
-                    json!({"signature":signature,"seen":now(),"attempts":0,"state":"waiting","library":s.opt.root});
+                    json!({"signature":signature,"seen":now(),"attempts":0,"state":"waiting","library":s.root()});
                 let _ = crate::workbench::write(&index_path, &index);
                 continue;
             }
             let item = &index[&key];
             // A pending job belongs to its original library; do not attach it to a new one.
-            if item["state"] != "done" && item["meeting"].is_string() && item["library"].as_str().is_some_and(|p| Path::new(p) != s.opt.root) { continue; }
+            if item["state"] != "done" && item["meeting"].is_string() && item["library"].as_str().is_some_and(|p| Path::new(p) != s.root()) { continue; }
             if item["state"] == "done"
                 || item["attempts"].as_u64().unwrap_or(0) >= 3
                 || now() - item["seen"].as_f64().unwrap_or(now()) < 120.
@@ -84,7 +85,7 @@ pub(super) fn start_inbox(state: &Shared) {
                             .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
                     })
                     .unwrap_or_else(|| chrono::Local::now().naive_local());
-                let d = meetings::new_folder(&s.opt.root, &title, when);
+                let d = meetings::new_folder(&s.root(), &title, when);
                 if std::fs::create_dir_all(&d).is_err() {
                     continue;
                 }
@@ -155,7 +156,7 @@ pub(super) async fn inbox_put(
     let settings: crate::inbox::Settings =
         serde_json::from_value(v).map_err(|e| bad(e.to_string()))?;
     for dir in &settings.directories {
-        if let (Ok(root), Ok(input)) = (s.opt.root.canonicalize(), dir.canonicalize()) {
+        if let (Ok(root), Ok(input)) = (s.root().canonicalize(), dir.canonicalize()) {
             if root.starts_with(input) {
                 return Err(bad("投递目录不能包含会议库，避免重复导入"));
             }
@@ -165,7 +166,7 @@ pub(super) async fn inbox_put(
         }
     }
     let _g = s.workbench_lock.lock().unwrap();
-    std::fs::create_dir_all(&s.opt.root).map_err(|e| server_error(e.to_string()))?;
+    std::fs::create_dir_all(&s.root()).map_err(|e| server_error(e.to_string()))?;
     let v = json!(settings);
     crate::workbench::write(&s.settings_dir().map_err(server_error)?.join("inbox-settings.json"), &v).map_err(server_error)?;
     Ok(Json(v))
@@ -186,7 +187,7 @@ pub(super) async fn glossary_put(
 ) -> ApiResult<Json<Value>> {
     let terms = crate::workbench::validate_terms(v).map_err(bad)?;
     let _g = s.workbench_lock.lock().unwrap();
-    std::fs::create_dir_all(&s.opt.root).map_err(|e| server_error(e.to_string()))?;
+    std::fs::create_dir_all(&s.root()).map_err(|e| server_error(e.to_string()))?;
     let value = json!(terms);
     crate::workbench::write(&s.settings_dir().map_err(server_error)?.join("glossary.json"), &value).map_err(server_error)?;
     Ok(Json(value))
@@ -298,7 +299,7 @@ pub(super) async fn workbench_insights(
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<Json<Value>> {
     let folder = s.idle_folder(&id)?;
-    let root = s.opt.root.clone();
+    let root = s.root();
     let cfg = s.config().llm;
     let answer=tokio::task::spawn_blocking(move ||crate::workbench::ask(&root,&id,"请基于原文给出：全局诊断、关键洞察、未来情景（前提、可能结果、早期信号）、决策建议、值得追问的问题。明确区分会议事实与 AI 推断，不推测个人动机；材料不足时明确说明。",&cfg)).await.map_err(|e|server_error(e.to_string()))?.map_err(bad)?;
     let _g = s.workbench_lock.lock().unwrap();
@@ -309,7 +310,7 @@ pub(super) async fn workbench_insights(
 }
 pub(super) async fn questions_get(State(s): State<Shared>) -> ApiResult<Json<Value>> {
     let _g = s.workbench_lock.lock().unwrap();
-    let v = crate::workbench::read(&s.opt.root.join("questions.json")).map_err(server_error)?;
+    let v = crate::workbench::read(&s.root().join("questions.json")).map_err(server_error)?;
     Ok(Json(if v.is_array() { v } else { json!([]) }))
 }
 pub(super) async fn workbench_ask(
@@ -321,7 +322,7 @@ pub(super) async fn workbench_ask(
         s.folder(&scope)?;
     }
     let question = v["question"].as_str().unwrap_or("").to_string();
-    let root = s.opt.root.clone();
+    let root = s.root();
     let cfg = s.config().llm;
     let answer =
         tokio::task::spawn_blocking(move || crate::workbench::ask(&root, &scope, &question, &cfg))
@@ -329,7 +330,7 @@ pub(super) async fn workbench_ask(
             .map_err(|e| server_error(e.to_string()))?
             .map_err(bad)?;
     let _g = s.workbench_lock.lock().unwrap();
-    let path = s.opt.root.join("questions.json");
+    let path = s.root().join("questions.json");
     let mut history = crate::workbench::read(&path)
         .map_err(server_error)?
         .as_array()
@@ -414,7 +415,7 @@ pub(super) fn enrich_after_summary(s: &AppState, dir: &Path, cfg: &Config) {
     }
     if initial.get("insights").is_none() {
         let scope = dir.file_name().unwrap_or_default().to_string_lossy();
-        let generated=crate::workbench::ask(&s.opt.root,&scope,"请给出全局诊断、关键洞察、未来情景、决策建议和值得追问的问题。明确区分会议事实与 AI 分析，不推测个人动机，材料不足时说明。",&cfg.llm);
+        let generated=crate::workbench::ask(&s.root(),&scope,"请给出全局诊断、关键洞察、未来情景、决策建议和值得追问的问题。明确区分会议事实与 AI 分析，不推测个人动机，材料不足时说明。",&cfg.llm);
         let _g = s.workbench_lock.lock().unwrap();
         if let Ok(mut current) = crate::workbench::read(&state_path) {
             match generated {
@@ -484,5 +485,8 @@ pub(super) async fn storage_location(State(s): State<Shared>, Json(v): Json<Valu
     let location = s.opt.config_path.with_file_name("library.json");
     std::fs::create_dir_all(location.parent().unwrap()).map_err(|e| server_error(e.to_string()))?;
     crate::workbench::write(&location, &json!({"root":path})).map_err(server_error)?;
+    let mut cfg = s.config();
+    cfg.storage_root = path.to_string_lossy().into_owned();
+    config::save(&s.opt.config_path, &cfg).map_err(|e| server_error(e.to_string()))?;
     Ok(Json(json!({"root":path,"restart_required":true})))
 }

@@ -3012,7 +3012,7 @@ wheels = [
 
 [[package]]
 name = "tingo"
-version = "0.4.3"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
