@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub const LATEST_URL: &str = "https://api.github.com/repos/tancheng33/tingo/releases/latest";
+const MANIFEST_URL: &str = "https://github.com/tancheng33/tingo/releases/latest/download/latest.json";
+const RELEASE_BASE: &str = "https://github.com/tancheng33/tingo/releases";
 const MAX_NOTES: usize = 3000;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -148,20 +150,62 @@ pub fn client(version: &str, timeout: Option<Duration>) -> Result<reqwest::block
         .map_err(|e| e.to_string())
 }
 
-/// 访问 GitHub 拿最新 Release（10 秒超时）。
+/// API 限流或不可达时，使用公开 Release 附件；不需要用户提供 GitHub token。
 pub fn fetch_latest(version: &str) -> Result<Release, String> {
-    let c = client(version, Some(Duration::from_secs(10)))?;
-    let r = c
-        .get(LATEST_URL)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .map_err(|e| e.to_string())?;
-    if !r.status().is_success() {
-        return Err(format!("GitHub {}", r.status()));
+    let c = client(version, Some(Duration::from_secs(15)))?;
+    fetch_latest_with(|url| {
+        c.get(url).send().map_err(|e| e.to_string())?
+            .error_for_status().map_err(|e| e.to_string())?
+            .text().map_err(|e| e.to_string())
+    })
+}
+
+fn fetch_latest_with(mut get: impl FnMut(&str) -> Result<String, String>) -> Result<Release, String> {
+    let api = (|| {
+        let v: Value = serde_json::from_str(&get(LATEST_URL)?).map_err(|e| e.to_string())?;
+        let sums = checksums_url(&v).and_then(|u| get(&u).ok());
+        parse_release(&v, sums.as_deref()).ok_or_else(|| "GitHub: no tag_name".to_string())
+    })();
+    match api {
+        Ok(release) => Ok(release),
+        Err(api_error) => (|| {
+            let manifest: Value = serde_json::from_str(&get(MANIFEST_URL)?).map_err(|e| e.to_string())?;
+            let version = manifest_version(&manifest)?;
+            // Pin checksum and DMG URLs to the manifest version, avoiding a latest-release race.
+            let sums = get(&format!("{RELEASE_BASE}/download/v{version}/checksums.txt"))?;
+            release_from_manifest(&manifest, &sums)
+        })().map_err(|fallback: String| format!(
+            "无法检查更新，请稍后重试或访问 {RELEASE_BASE}/latest / Update check failed. API: {api_error}; release manifest: {fallback}"
+        )),
     }
-    let v: Value = r.json().map_err(|e| e.to_string())?;
-    let sums = checksums_url(&v).and_then(|u| c.get(u).send().ok()?.error_for_status().ok()?.text().ok());
-    parse_release(&v, sums.as_deref()).ok_or_else(|| "GitHub: no tag_name".to_string())
+}
+
+fn manifest_version(v: &Value) -> Result<&str, String> {
+    let version = v["version"].as_str().ok_or("Missing update version")?;
+    if parse(version).is_none() || !version.bytes().all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b)) {
+        return Err("Invalid update version".into());
+    }
+    Ok(version)
+}
+
+fn release_from_manifest(v: &Value, sums: &str) -> Result<Release, String> {
+    let version = manifest_version(v)?;
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "aarch64",
+        "x86_64" => "x64",
+        _ => return Err("Unsupported update architecture".into()),
+    };
+    let name = format!("Tingo_{version}_{arch}.dmg");
+    let sha256 = checksum_for(sums, &name).ok_or("No verified installer for this architecture")?;
+    Ok(Release {
+        latest: version.into(),
+        url: format!("{RELEASE_BASE}/tag/v{version}"),
+        notes: v["notes"].as_str().unwrap_or("").chars().take(MAX_NOTES).collect(),
+        dmg: Some(format!("{RELEASE_BASE}/download/v{version}/{name}")),
+        dmg_name: name,
+        sha256: Some(sha256),
+        size: 0,
+    })
 }
 
 /// 文件的 sha256（小写十六进制）
@@ -182,6 +226,32 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_rate_limit_falls_back_to_pinned_release_assets() {
+        let arch = if std::env::consts::ARCH == "aarch64" { "aarch64" } else { "x64" };
+        let mut urls = Vec::new();
+        let r = fetch_latest_with(|url| {
+            urls.push(url.to_string());
+            if url == LATEST_URL { return Err("403 Forbidden: rate limit".into()); }
+            if url == MANIFEST_URL { return Ok(r#"{"version":"0.5.2","notes":"fixed"}"#.into()); }
+            assert_eq!(url, format!("{RELEASE_BASE}/download/v0.5.2/checksums.txt"));
+            Ok(format!("{}  Tingo_0.5.2_{arch}.dmg", "a".repeat(64)))
+        }).unwrap();
+        assert_eq!(urls.len(), 3);
+        assert_eq!(r.latest, "0.5.2");
+        assert_eq!(r.sha256, Some("a".repeat(64)));
+        assert!(r.dmg.unwrap().contains("/download/v0.5.2/"));
+    }
+
+    #[test]
+    fn manifest_fallback_requires_valid_version_and_matching_checksum() {
+        assert!(release_from_manifest(&json!({"version":"../../bad"}), "").is_err());
+        assert!(release_from_manifest(&json!({"version":"0.5.2"}), "").is_err());
+        let err = fetch_latest_with(|_| Err("403 Forbidden".into())).unwrap_err();
+        assert!(err.contains("/releases/latest"));
+        assert!(err.contains("release manifest"));
+    }
 
     #[test]
     fn semver_compare() {

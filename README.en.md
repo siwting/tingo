@@ -28,6 +28,13 @@ Looking for a **free, open-source, local alternative to Otter.ai, Granola, Firef
 
 > The meetings, names and numbers in the screenshots are fictional demo data.
 
+## v0.5.3: flowing background and update fallback
+
+- The home gradient flows gently while the recording card stays still, respecting Reduce Motion.
+- The legacy update checker falls back to release assets when the GitHub API is unavailable or rate-limited, retaining installer checksum verification.
+
+[Download v0.5.3](https://github.com/tancheng33/tingo/releases/tag/v0.5.3). Users on v0.5.2 can update in-app; earlier versions require a manual installation.
+
 ## v0.5.2: in-app updates
 
 - Download and verify an update, then click **Restart and update** to replace and reopen the app automatically. Meetings, settings and speech models are kept.

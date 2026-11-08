@@ -389,7 +389,7 @@ a.tag-chip.sm:hover { color: var(--blue); }
 .hero-head h1 { margin: 18px 0 10px; font-size: 52px; line-height: 1.15; font-weight: 500; color: #171717; letter-spacing: 1px; }
 .hero-head p { margin: 0; color: var(--muted); font-size: 15.5px; }
 
-/* 极光面板：录音时随音量起伏 */
+/* 极光面板：闲置时持续流动，录音时叠加音量起伏；仅移动背景层。 */
 .aurora {
   --lv: 0;
   position: relative; overflow: hidden; isolation: isolate;
@@ -397,19 +397,39 @@ a.tag-chip.sm:hover { color: var(--blue); }
   display: grid; place-items: center; padding: 48px 24px;
   background: linear-gradient(180deg, #f3f7ff 0%, #e6f1ff 100%);
 }
-.aurora .blob { position: absolute; border-radius: 50%; filter: blur(46px); z-index: -1; transition: transform 0.25s ease-out, opacity 0.4s; will-change: transform; }
-.aurora .b1 { width: 520px; height: 420px; left: -80px; bottom: -180px; background: radial-gradient(closest-side, #39d7f7, rgba(57, 215, 247, 0)); animation: drift1 16s ease-in-out infinite alternate; }
-.aurora .b2 { width: 640px; height: 520px; left: 30%; bottom: -300px; background: radial-gradient(closest-side, #1f4bff, rgba(31, 75, 255, 0)); animation: drift2 19s ease-in-out infinite alternate; }
-.aurora .b3 { width: 420px; height: 360px; right: -60px; top: -140px; background: radial-gradient(closest-side, #8fe6ff, rgba(143, 230, 255, 0)); animation: drift3 14s ease-in-out infinite alternate; }
-.aurora .b4 { width: 380px; height: 300px; left: 18%; top: -150px; background: radial-gradient(closest-side, #c9c6ff, rgba(201, 198, 255, 0)); opacity: 0.8; animation: drift3 22s ease-in-out infinite alternate-reverse; }
+.aurora .blob { position: absolute; border-radius: 50%; filter: blur(46px); z-index: -1; pointer-events: none; transition: transform 0.25s ease-out; will-change: translate; }
+.aurora .b1 { width: 520px; height: 420px; left: -80px; bottom: -180px; background: radial-gradient(closest-side, #39d7f7, rgba(57, 215, 247, 0)); animation: drift1 12s ease-in-out -4s infinite; }
+.aurora .b2 { width: 640px; height: 520px; left: 30%; bottom: -240px; background: radial-gradient(closest-side, #1f4bff, rgba(31, 75, 255, 0)); animation: drift2 15s ease-in-out -8s infinite; }
+.aurora .b3 { width: 420px; height: 360px; right: -60px; top: -140px; background: radial-gradient(closest-side, #8fe6ff, rgba(143, 230, 255, 0)); animation: drift3 13s ease-in-out -3s infinite; }
+.aurora .b4 { width: 380px; height: 300px; left: 18%; top: -150px; background: radial-gradient(closest-side, #c9c6ff, rgba(201, 198, 255, 0)); opacity: 0.8; animation: drift4 17s ease-in-out -10s infinite; }
 .aurora .grain { position: absolute; inset: 0; z-index: -1; opacity: 0.22; mix-blend-mode: soft-light; pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 .aurora.live .b1 { transform: scale(calc(1 + var(--lv) * 0.35)) translateY(calc(var(--lv) * -40px)); }
 .aurora.live .b2 { transform: scale(calc(1 + var(--lv) * 0.28)) translateY(calc(var(--lv) * -60px)); }
 .aurora.live .b3 { transform: scale(calc(1 + var(--lv) * 0.2)); }
-@keyframes drift1 { to { translate: 120px -40px; } }
-@keyframes drift2 { to { translate: -160px -30px; } }
-@keyframes drift3 { to { translate: -90px 50px; } }
+@keyframes drift1 {
+  0%, 100% { translate: 0 0; }
+  35% { translate: 220px -100px; }
+  70% { translate: 90px 30px; }
+}
+@keyframes drift2 {
+  0%, 100% { translate: 100px 20px; }
+  40% { translate: -200px -100px; }
+  75% { translate: -60px -30px; }
+}
+@keyframes drift3 {
+  0%, 100% { translate: 0 0; }
+  40% { translate: -180px 150px; }
+  75% { translate: -60px 60px; }
+}
+@keyframes drift4 {
+  0%, 100% { translate: -80px 30px; }
+  45% { translate: 240px 140px; }
+  75% { translate: 100px -20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aurora .blob { animation: none; transform: none !important; translate: none; will-change: auto; }
+}
 
 /* 玻璃卡片 + 蓝色光圈，对应百炼首页的输入框 */
 .glass-ring {
