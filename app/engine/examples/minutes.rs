@@ -18,6 +18,7 @@ fn main() {
         &cfg.llm,
         chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
         &hot,
+        &[],
         &cfg.minutes_language,
         summarize::Hooks {
             on_token: &mut |_t| {

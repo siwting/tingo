@@ -131,11 +131,13 @@ pub fn one_liner(text: &str) -> String {
     String::new()
 }
 
-/// 会议元数据 meta.json。写入时只写 title（为空时不写）、tags、archived 三个字段。
+/// 会议元数据；手动业务分类与自动主题标签独立保存。
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub business: String,
     pub tags: Vec<String>,
     pub archived: bool,
 }
@@ -179,6 +181,7 @@ pub fn read_meta(dir: &Path) -> Meta {
         .unwrap_or_default();
     Meta {
         title: normalize_title(v["title"].as_str()),
+        business: normalize_tag(v["business"].as_str().unwrap_or_default()),
         tags: normalize_tags(&tags),
         archived: v["archived"].as_bool().unwrap_or(false),
     }
@@ -188,6 +191,7 @@ pub fn read_meta(dir: &Path) -> Meta {
 pub fn write_meta(dir: &Path, meta: &Meta) -> std::io::Result<()> {
     let meta = Meta {
         title: normalize_title(meta.title.as_deref()),
+        business: normalize_tag(&meta.business),
         tags: normalize_tags(&meta.tags),
         archived: meta.archived,
     };
@@ -272,6 +276,7 @@ pub struct Summary {
     pub duration: String,
     pub speakers: Vec<String>,
     pub tags: Vec<String>,
+    pub business: String,
     pub archived: bool,
     /// 整个会议文件夹的大小
     pub size_bytes: u64,
@@ -319,6 +324,7 @@ pub fn summary(dir: &Path) -> Summary {
             })
             .unwrap_or_default(),
         tags: meta.tags,
+        business: meta.business,
         archived: meta.archived,
         size_bytes: size_of(dir),
         has_audio: has_recording(dir),
@@ -449,17 +455,17 @@ mod tests {
     fn meta_read_write() {
         let dir = temp_root("meta");
         assert_eq!(read_meta(&dir), Meta::default());
-        let meta = Meta { title: Some(" 周会 ".into()), tags: vec!["项目A".into(), "项目A".into(), " 周会".into()], archived: true };
+        let meta = Meta { title: Some(" 周会 ".into()), tags: vec!["项目A".into(), "项目A".into(), " 周会".into()], archived: true, ..Default::default() };
         write_meta(&dir, &meta).unwrap();
         let text = std::fs::read_to_string(dir.join(META)).unwrap();
         assert_eq!(text, "{\n  \"title\": \"周会\",\n  \"tags\": [\n    \"项目A\",\n    \"周会\"\n  ],\n  \"archived\": true\n}");
-        assert_eq!(read_meta(&dir), Meta { title: Some("周会".into()), tags: vec!["项目A".into(), "周会".into()], archived: true });
+        assert_eq!(read_meta(&dir), Meta { title: Some("周会".into()), tags: vec!["项目A".into(), "周会".into()], archived: true, ..Default::default() });
         // 空标题不写这个键
-        write_meta(&dir, &Meta { title: Some("".into()), tags: vec![], archived: false }).unwrap();
+        write_meta(&dir, &Meta { title: Some("".into()), tags: vec![], archived: false, ..Default::default() }).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(META)).unwrap(), "{\n  \"tags\": [],\n  \"archived\": false\n}");
         // 手改坏的、类型不对的字段按默认值；读的时候也整理标签
         std::fs::write(dir.join(META), "{\"title\": 3, \"tags\": [\" a \", 1, \"a\"], \"archived\": \"yes\"}").unwrap();
-        assert_eq!(read_meta(&dir), Meta { title: None, tags: vec!["a".into()], archived: false });
+        assert_eq!(read_meta(&dir), Meta { title: None, tags: vec!["a".into()], archived: false, ..Default::default() });
         std::fs::write(dir.join(META), "not json").unwrap();
         assert_eq!(read_meta(&dir), Meta::default());
         std::fs::remove_dir_all(dir).ok();
@@ -476,7 +482,7 @@ mod tests {
         assert_eq!((items[0].tags.len(), items[0].archived, items[0].has_audio, items[0].size_bytes), (0, false, true, 100));
         std::fs::write(a.join(MINUTES), "# 纪要标题\n").unwrap();
         assert_eq!(summary(&a).title, "纪要标题");
-        write_meta(&a, &Meta { title: Some("我改的".into()), tags: vec!["周会".into()], archived: true }).unwrap();
+        write_meta(&a, &Meta { title: Some("我改的".into()), tags: vec!["周会".into()], archived: true, ..Default::default() }).unwrap();
         let m = summary(&a);
         assert_eq!((m.title.as_str(), m.tags.clone(), m.archived), ("我改的", vec!["周会".to_string()], true));
         assert_eq!(m.size_bytes, size_of(&a));

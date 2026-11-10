@@ -315,28 +315,49 @@ pub fn annotate_dates(text: &str, d: NaiveDate) -> String {
 
 #[cfg(test)]
 fn glossary(hotwords: &[String]) -> String {
-    glossary_in(hotwords, Lang::Zh)
+    glossary_in(hotwords, &[], Lang::Zh)
 }
 
-fn glossary_in(hotwords: &[String], lang: Lang) -> String {
+/// `corrections`：名词库里登记的错误写法 → 正式名称
+fn glossary_in(hotwords: &[String], corrections: &[(String, String)], lang: Lang) -> String {
     let words: Vec<&str> = hotwords
         .iter()
         .map(|w| w.trim())
         .filter(|w| !w.is_empty())
         .collect();
-    if words.is_empty() {
-        return String::new();
+    let fixes: Vec<String> = corrections
+        .iter()
+        .filter(|(e, n)| !e.trim().is_empty() && !n.trim().is_empty())
+        .map(|(e, n)| format!("{} → {}", e.trim(), n.trim()))
+        .collect();
+    let mut out = String::new();
+    if !words.is_empty() {
+        out += &if lang.is_en() {
+            format!(
+                "\n9. Proper nouns in this meeting (people, projects, systems): {}. Wherever the transcript has a homophone or near-homophone of one of them, replace it with the exact term.",
+                words.join(", ")
+            )
+        } else {
+            format!(
+                "\n9. 本场会议涉及的专有名词（人名、项目、系统名）：{}。转写里与它们同音或近音的写法，一律改成这些词。",
+                words.join("、")
+            )
+        };
     }
-    if lang.is_en() {
-        return format!(
-            "\n9. Proper nouns in this meeting (people, projects, systems): {}. Wherever the transcript has a homophone or near-homophone of one of them, replace it with the exact term.",
-            words.join(", ")
-        );
+    if !fixes.is_empty() {
+        out += &if lang.is_en() {
+            format!(
+                "\n10. Known misheard spellings: {}. Wherever the transcript has the spelling on the left, write the one on the right.",
+                fixes.join("; ")
+            )
+        } else {
+            format!(
+                "\n10. 已知的听错写法：{}。转写里出现箭头左边的写法时，改成右边的词。",
+                fixes.join("；")
+            )
+        };
     }
-    format!(
-        "\n9. 本场会议涉及的专有名词（人名、项目、系统名）：{}。转写里与它们同音或近音的写法，一律改成这些词。",
-        words.join("、")
-    )
+    out
 }
 
 /// 是不是本机 Ollama 上的这个模型：以 /api/show 里真实的模型文件格式为准
@@ -688,6 +709,7 @@ pub fn summarize(
     cfg: &LlmConfig,
     meeting_date: NaiveDate,
     hotwords: &[String],
+    corrections: &[(String, String)],
     lang_setting: &str,
     hooks: Hooks,
 ) -> Result<String, String> {
@@ -697,7 +719,7 @@ pub fn summarize(
     let pr = prompts(lang);
     let day = day_line(meeting_date, lang);
     let dated = format!("{day}\n\n{}", calendar_hint_in(meeting_date, lang));
-    let gl = glossary_in(hotwords, lang);
+    let gl = glossary_in(hotwords, corrections, lang);
     let translate = translate_note(lang, spoken);
     let max_chars = default_max_chars(cfg);
     let text = annotate_dates(&tr.to_prompt_text_in(lang), meeting_date);
@@ -944,7 +966,10 @@ mod tests {
         // 合并时截取格式要求的分隔只出现一次
         assert_eq!(MINUTES_PROMPT_EN.matches(prompts(Lang::En).transcript_marker).count(), 1);
         assert_eq!(MINUTES_PROMPT.matches(prompts(Lang::Zh).transcript_marker).count(), 1);
-        assert!(glossary_in(&["Kafka".into(), "Atlas".into()], Lang::En).contains(": Kafka, Atlas."));
+        assert!(glossary_in(&["Kafka".into(), "Atlas".into()], &[], Lang::En).contains(": Kafka, Atlas."));
+        let fixed = glossary_in(&["袁夕华".into()], &[("西华".into(), "袁夕华".into())], Lang::Zh);
+        assert!(fixed.contains("\n9. ") && fixed.contains("\n10. 已知的听错写法：西华 → 袁夕华。"));
+        assert!(glossary_in(&[], &[], Lang::Zh).is_empty());
         assert_eq!(translate_note(Lang::Zh, Lang::Zh), "");
         assert_eq!(translate_note(Lang::En, Lang::En), "");
         assert!(translate_note(Lang::En, Lang::Zh).contains("write the minutes in English, translating as needed"));

@@ -15,7 +15,8 @@ import {
   toast,
 } from "../dom";
 import {
-  allTags,
+  editBusiness,
+  setMeta,
   batch,
   type BatchAction,
   confirmBox,
@@ -64,7 +65,11 @@ function drawTools(): void {
   const box = $maybe("#mTools");
   if (!box) return;
   const archivedCount = S.meetings.filter((m) => m.archived).length;
-  const tags = allTags();
+  const counts = new Map<string, number>();
+  for (const meeting of S.meetings)
+    for (const category of categoriesOf(meeting)) counts.set(category, (counts.get(category) || 0) + 1);
+  const tags = [...counts].map(([tag, count]) => ({ tag, count })).sort((a,b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  if (view.tag && !counts.has(view.tag)) view.tag = "";
   box.innerHTML = `
     <div class="seg fit" id="mView">
       <button data-v="all" class="${view.archived ? "" : "on"}">${t("全部", "All")}</button>
@@ -82,6 +87,7 @@ function drawTools(): void {
     (b) =>
       (b.onclick = () => {
         view.archived = b.dataset.v === "archived";
+        view.tag = "";
         view.selected.clear();
         redraw();
       }),
@@ -90,6 +96,7 @@ function drawTools(): void {
     (b) =>
       (b.onclick = () => {
         view.tag = view.tag === b.dataset.t ? "" : (b.dataset.t ?? "");
+        view.selected.clear();
         redraw();
       }),
   );
@@ -107,8 +114,15 @@ export function showTag(tag: string): void {
   location.hash = "#/meetings";
 }
 
-const redraw = () =>
-  drawMeetings(($maybe<HTMLInputElement>("#mSearch")?.value ?? "").trim());
+const redraw = () => {
+  const q = ($maybe<HTMLInputElement>("#mSearch")?.value ?? "").trim();
+  drawMeetings(q);
+  if (q) void runSearch(q);
+};
+const categoriesOf = (m: MeetingSummary): string[] => [...new Set([...(m.tags || []), ...(m.business ? [m.business] : [])])];
+const matchesFilters = (m: MeetingSummary) =>
+  !!m.archived === view.archived &&
+  (!view.tag || categoriesOf(m).includes(view.tag));
 
 function drawBatch(): void {
   const bar = $maybe("#mBatch");
@@ -119,6 +133,7 @@ function drawBatch(): void {
   const dis = n ? "" : "disabled";
   bar.innerHTML = `
     <span class="batch-n">${t(`已选 ${n} 场`, `${n} selected`)}</span>
+    <button class="btn" data-b="business" ${dis}>${t("设置业务", "Set business")}</button>
     <button class="btn" data-b="tag" ${dis}>${t("加标签", "Add tag")}</button>
     <button class="btn" data-b="${view.archived ? "unarchive" : "archive"}" ${dis}>${view.archived ? t("取消归档", "Unarchive") : t("归档", "Archive")}</button>
     <button class="btn" data-b="delete_audio" ${dis}>${t("只删录音", "Delete recordings")}</button>
@@ -131,6 +146,16 @@ function drawBatch(): void {
 async function runBatch(kind: string): Promise<void> {
   const ids = [...view.selected];
   if (!ids.length) return;
+  if (kind === "business") {
+    const business = await editBusiness("", t(`设置 ${ids.length} 场会议的业务分类`, `Set business for ${ids.length} meetings`));
+    if (business === null) return;
+    let saved = 0;
+    try {
+      for (const id of ids) { await setMeta(id, { business }); saved++; }
+      toast(t(`已更新 ${saved} 场会议的业务分类`, `Updated ${saved} meetings`));
+    } catch (e) { toast(t(`已保存 ${saved} 场，其余未完成：`, `Saved ${saved}; remaining failed: `) + errorMessage(e), true); }
+    await refreshMeetings(); view.selected.clear(); redraw(); return;
+  }
   let action = kind as BatchAction;
   let tag: string | undefined;
   if (kind === "tag") {
@@ -201,15 +226,16 @@ async function runBatch(kind: string): Promise<void> {
 function drawMeetings(q: string): void {
   const box = $maybe("#mList");
   if (!box) return;
+  searchSeq++;
   drawTools();
   drawBatch();
   const items = S.meetings.filter(
     (m) =>
-      !!m.archived === view.archived &&
-      (!view.tag || (m.tags ?? []).includes(view.tag)) &&
+      matchesFilters(m) &&
       (!q ||
         (
           m.title +
+          (m.business || "") +
           m.summary +
           m.speakers.join("") +
           (m.tags ?? []).join("")
@@ -288,6 +314,11 @@ async function runSearch(q: string): Promise<void> {
   }
   const box = $maybe("#mList");
   if (seq !== searchSeq || !box) return;
+  for (const m of S.meetings) {
+    if (m.business?.toLowerCase().includes(q.toLowerCase()) && !r.results.some(r => r.id === m.id))
+      r.results.push({ ...m, minutes_hit: false, hits: [] });
+  }
+  r.results = r.results.filter(r => { const m = S.meetings.find(m => m.id === r.id); return m ? matchesFilters(m) : false; });
   const also = r.expanded.filter((x) => x.toLowerCase() !== q.toLowerCase());
   const head = `<div class="search-head">${t(`找到 ${r.results.length} 场会议`, `${r.results.length} meeting${r.results.length === 1 ? "" : "s"} found`)}${
     also.length
@@ -330,7 +361,7 @@ const card = (m: MeetingSummary, i: number) => `
     ${view.selecting ? `<span class="pick-box"></span>` : ""}
     <div class="when"><span>${isEn() ? esc(new Date(`${m.date}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" })) : `${esc(m.date.slice(5).replace("-", " 月 "))} 日`} ${esc(m.time)}</span><span>${esc(m.duration)}</span></div>
     <h3>${esc(m.title)}</h3>
-    ${m.tags?.length ? `<div class="card-tags">${m.tags.map((tg) => `<span class="tag-chip sm">${esc(tg)}</span>`).join("")}</div>` : ""}
+    ${categoriesOf(m).length ? `<div class="card-tags">${categoriesOf(m).map(category => `<span class="tag-chip sm">${esc(category)}</span>`).join("")}</div>` : ""}
     <p>${esc(m.summary || (m.has_transcript ? t("已转写，还没有生成纪要", "Transcribed — no minutes yet") : t("录音还没有处理", "Recording not processed yet")))}</p>
     <div class="foot">
       <span class="avatars">${m.speakers

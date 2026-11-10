@@ -9,7 +9,6 @@ import { renderMarkdown } from "../markdown";
 import { minutesDocument, wordDocument } from "../pdf";
 import { confirmBox, deleteAudio, deleteMeeting, editTags, fmtBytes, renameBox, setMeta } from "../manage";
 import { showTag } from "./meetings";
-import type { Config } from "../api";
 import { poll } from "../poll";
 import { refreshMeetings } from "../sidebar";
 import { isBusy, jobOf, minutesProgress, progressOf, S, sectionLabels } from "../state";
@@ -113,6 +112,7 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
               : ""
           }
           ${d.has_transcript && !jobHere ? `<button class="btn" id="aRegen">${ICON.redo}${d.minutes ? t("重新生成", "Regenerate") : t("生成纪要", "Write minutes")}</button>` : ""}
+          ${d.has_transcript && d.audio && !jobHere ? `<button class="btn" id="aRetranscribe" title="${t("用当前识别模型重新转写录音，再重新生成纪要", "Transcribe the recording again with the current speech model, then rewrite the minutes")}">${ICON.mic}${t("重新转写", "Re-transcribe")}</button>` : ""}
           <button class="btn ghost" id="aFolder" title="${t("打开文件夹", "Open folder")}">${ICON.folder}</button>
           <div class="menu-wrap"><button class="btn ghost" id="aMore" title="${t("更多", "More")}">···</button>
             <div class="menu" id="moreMenu" hidden>
@@ -125,17 +125,13 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
       </div>
       <div class="meta">
         <span>${esc(d.date)} ${esc(d.time)}</span>
-        ${(d.tags ?? []).map((tg) => `<a class="tag-chip sm" href="#/meetings" data-tag="${esc(tg)}">${esc(tg)}</a>`).join("")}
         ${d.duration ? `<span class="sep"></span><span>${t("时长", "Duration")} ${esc(d.duration)}</span>` : ""}
-        ${
-          d.speaker_list.length
-            ? `<span class="sep"></span>
-          <span class="speakers">${d.speaker_list
-            .map((s) => `<span class="chip"><span class="dot" style="background:${color(s.index)}"></span>${esc(speakerName(s.name))}</span>`)
-            .join("")}
-          <span class="speaker-actions"><button class="btn" id="aRename">${ICON.people}${t("改名", "Rename")}</button><button class="btn" id="aGuess">${ICON.spark}${t("让 AI 根据对话猜名字", "Let AI guess names from the conversation")}</button></span><span id="speakerGuessStatus" class="speaker-guess-status" hidden></span></span>`
-            : ""
-        }
+        <span class="sep"></span>
+        <span class="detail-tags" aria-label="${t("标签", "Tags")}">
+          ${[...new Set([...(d.tags ?? []), ...(d.business ? [d.business] : [])])].map((tg) => `<a class="tag-chip" href="#/meetings" data-tag="${esc(tg)}">${esc(tg)}</a>`).join("")}
+          <button class="tag-chip" id="aCategory" title="${t("编辑标签", "Edit tags")}" aria-label="${t("编辑标签", "Edit tags")}">＋</button>
+        </span>
+        ${d.speaker_list.length ? `<button class="btn" id="aRename">${ICON.people}${t("改名", "Rename")}</button>` : ""}
       </div>
       ${
         d.has_transcript
@@ -169,6 +165,16 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
     const el = $maybe(sel);
     if (el) el.onclick = fn;
   };
+  on("#aCategory", async () => {
+    const tags = await editTags([...new Set([...(d.tags || []), ...(d.business ? [d.business] : [])])], t("添加分类", "Add category"));
+    if (tags === null) return;
+    try {
+      await setMeta(d.id, { tags: tags.filter(tag => tag !== d.business), business: d.business && tags.includes(d.business) ? d.business : "" });
+      await refreshMeetings();
+      await renderDetail(d.id, true);
+      toast(t("分类已保存", "Categories saved"));
+    } catch (e) { toast(errorMessage(e), true); }
+  });
   on("#aPush", pushMinutes);
   bindMoreMenu(d);
   $$<HTMLAnchorElement>(".meta .tag-chip[data-tag]").forEach(
@@ -191,8 +197,8 @@ export async function renderDetail(id: string, keepTab = false, at?: number): Pr
   });
   bindExportMenu(d);
   on("#aRegen", regenerate);
+  on("#aRetranscribe", retranscribe);
   on("#aRename", () => renameSpeakers());
-  on("#aGuess", guessSpeakers);
   updateSpeakerGuess(id);
   on("#aEdit", editMinutes);
   on("#aHistory", showMinutesHistory);
@@ -228,10 +234,133 @@ function jumpTo(ms: number): void {
   setTimeout(() => hit?.classList.remove("found"), 4000);
 }
 
+/* ---------- 选中错字就地纠正 ---------- */
+/* 在纪要或转写里选中一段文字，旁边出现「纠错」：把这场会议里所有同样的写法换掉，并可记进名词库，
+   以后识别（支持热词的模型）和写纪要都按正确写法来。 */
+
+let fixButton: HTMLButtonElement | null = null;
+const hideFixButton = (): void => {
+  fixButton?.remove();
+  fixButton = null;
+};
+document.addEventListener("mousedown", (e) => {
+  if (fixButton && !fixButton.contains(e.target as Node)) hideFixButton();
+});
+document.addEventListener("scroll", hideFixButton, true);
+window.addEventListener("hashchange", hideFixButton);
+
+function bindCorrection(pane: HTMLElement): void {
+  pane.onmouseup = () =>
+    setTimeout(() => {
+      hideFixButton();
+      const d = S.detail;
+      const sel = getSelection();
+      if (!d || !sel || sel.isCollapsed || !sel.rangeCount || jobOf(d.id)) return;
+      const range = sel.getRangeAt(0);
+      if (!pane.contains(range.commonAncestorContainer)) return;
+      const text = (sel.toString() || range.toString()).trim();
+      if (!text || /\n/.test(text) || [...text].length > 64) return;
+      const r = range.getBoundingClientRect();
+      const b = document.createElement("button");
+      b.className = "sel-fix";
+      b.innerHTML = ICON.edit + t("纠错", "Fix");
+      b.style.left = `${r.left + r.width / 2}px`;
+      if (r.top < 48) {
+        b.style.top = `${r.bottom + 6}px`;
+      } else {
+        b.style.top = `${r.top - 6}px`;
+        b.classList.add("above");
+      }
+      b.onmousedown = (e) => e.preventDefault(); // 点按钮不丢选区
+      b.onclick = () => {
+        hideFixButton();
+        correctText(text);
+      };
+      document.body.append(b);
+      fixButton = b;
+    });
+}
+
+const countIn = (text: string, word: string): number => (word ? text.split(word).length - 1 : 0);
+
+function correctText(selected: string): void {
+  const d = S.detail;
+  if (!d) return;
+  openModal(`<h3>${t("纠正识别错误", "Fix a misheard word")}</h3>
+    <p class="hint">${t("把这场会议转写和纪要里所有的原写法换成正确写法。替换前的纪要会保留在历史版本里。", "Replaces every occurrence in this meeting's transcript and minutes. The previous minutes are kept in version history.")}</p>
+    <div class="fix-form">
+      <label class="field"><span>${t("原写法", "As heard")}</span><input class="input" id="fxFrom" value="${esc(selected)}" maxlength="64"></label>
+      <label class="field"><span>${t("正确写法", "Correct form")}</span><input class="input" id="fxTo" maxlength="64" placeholder="${t("比如：星辰", "e.g. Kafka")}"></label>
+      <p class="fix-count" id="fxCount"></p>
+      <label class="fix-check"><input type="checkbox" id="fxGloss" checked><span id="fxGlossText"></span></label>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>${t("取消", "Cancel")}</button><button class="btn primary" id="fxSave">${t("全部替换", "Replace all")}</button></div>`);
+  const from = $<HTMLInputElement>("#fxFrom");
+  const to = $<HTMLInputElement>("#fxTo");
+  const gloss = $<HTMLInputElement>("#fxGloss");
+  const save = $<HTMLButtonElement>("#fxSave");
+  const update = () => {
+    const a = from.value.trim();
+    const b = to.value.trim();
+    const inTranscript = d.turns.reduce((n, tn) => n + countIn(tn.text, a), 0);
+    const inMinutes = countIn(d.minutes || "", a);
+    const count = $("#fxCount");
+    count.classList.toggle("bad", !!a && !inTranscript && !inMinutes);
+    count.textContent = !a
+      ? ""
+      : inTranscript || inMinutes
+        ? t(`将替换：转写 ${inTranscript} 处，纪要 ${inMinutes} 处`, `Will replace ${inTranscript} in the transcript and ${inMinutes} in the minutes`)
+        : t(`这场会议里找不到「${a}」，可能选到了格式符号，改一下原写法`, `“${a}” isn't in this meeting — the selection may include formatting; edit it`);
+    $("#fxGlossText").innerHTML = t(
+      `加入名词库：以后识别和写纪要都按「<b>${esc(b || "正确写法")}</b>」写，「${esc(a)}」记为错误写法`,
+      `Add to glossary: always write “<b>${esc(b || "correct form")}</b>” from now on, with “${esc(a)}” as a misheard form`,
+    );
+    save.disabled = !a || !b || a === b || (!inTranscript && !inMinutes);
+  };
+  from.oninput = to.oninput = update;
+  update();
+  to.focus();
+  to.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.isComposing && !save.disabled) save.click();
+  };
+  save.onclick = async () => {
+    const original = from.value.trim();
+    const replacement = to.value.trim();
+    save.disabled = true;
+    try {
+      const r = await api<{ glossary?: string }>(meetingPath(d.id, "/correct"), {
+        method: "POST",
+        json: { original, replacement, glossary: gloss.checked },
+      });
+      closeModal();
+      const top = main().scrollTop;
+      await renderDetail(d.id, true);
+      main().scrollTop = top;
+      refreshMeetings();
+      toast(
+        r.glossary === "added"
+          ? t(`已替换，并把「${replacement}」加入名词库`, `Replaced, and added “${replacement}” to the glossary`)
+          : r.glossary === "updated"
+            ? t(`已替换，「${original}」已记为「${replacement}」的错误写法`, `Replaced; “${original}” is now a misheard form of “${replacement}”`)
+            : r.glossary === "exists"
+              ? t("已替换（名词库里已有这条）", "Replaced (already in the glossary)")
+              : r.glossary === "added_disabled"
+                ? t("已替换；热词已满 100 个，新词条已加入名词库但未启用", "Replaced; the hotword limit is reached, so the new term was added but disabled")
+                : t("已替换", "Replaced"),
+      );
+    } catch (e) {
+      save.disabled = false;
+      toast(errorMessage(e), true);
+    }
+  };
+}
+
 function drawPane(): void {
   const d = S.detail;
   const pane = $maybe("#pane");
   if (!d || !pane) return;
+  hideFixButton();
+  pane.onmouseup = null;
   $$<HTMLButtonElement>(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === detailTab));
   const edit = $maybe("#aEdit");
   if (edit) edit.hidden = !(detailTab === "minutes" && d.minutes) || !!jobOf(d.id); // 生成中改了也会被新纪要覆盖
@@ -250,6 +379,7 @@ function drawPane(): void {
       : `<div class="minutes-empty">${t("还没有纪要。", "No minutes yet.")}<br><br><button class="btn primary" id="paneGen">${ICON.spark}${t("生成纪要", "Write minutes")}</button></div>`;
     const gen = $maybe("#paneGen");
     if (gen) gen.onclick = regenerate;
+    if (d.minutes) bindCorrection(pane);
   } else {
     pane.className = "card turns";
     pane.innerHTML = d.turns
@@ -261,6 +391,7 @@ function drawPane(): void {
       </div>`,
       )
       .join("");
+    bindCorrection(pane);
   }
   $$<HTMLButtonElement>(".ts", pane).forEach(
     (b) =>
@@ -270,20 +401,15 @@ function drawPane(): void {
       }),
   );
   $$<HTMLButtonElement>(".fb-draw", pane).forEach((b) => (b.onclick = toExcalidraw));
-  // 人名与术语：一键加进热词，以后识别、写纪要都按这个写法
+  // 人名与术语：一键加进名词库，以后识别、写纪要都按这个写法
   $$<HTMLButtonElement>(".terms-add", pane).forEach(
     (b) =>
       (b.onclick = async () => {
         const words = $$<HTMLElement>(".term", pane).map((x) => x.dataset.term ?? "").filter(Boolean);
         try {
-          const c = await api<Config>("/api/config");
-          const add = words.filter((w) => !c.hotwords.includes(w));
-          if (!add.length) return toast(t("这些词都已经在热词里了", "These are already in your hotwords"));
-          await api("/api/config", {
-            method: "PUT",
-            json: { base_url: c.base_url, model: c.model, api_key: null, hotwords: [...c.hotwords, ...add], webhook: c.webhook, secret: null },
-          });
-          toast(t(`已加入 ${add.length} 个热词`, `Added ${add.length} hotword${add.length > 1 ? "s" : ""}`));
+          const { added } = await api<{ added: number }>("/api/glossary/words", { method: "POST", json: { words } });
+          if (!added) return toast(t("这些词都已经在名词库里了", "These are already in your glossary"));
+          toast(t(`已加入名词库 ${added} 个`, `Added ${added} word${added > 1 ? "s" : ""} to the glossary`));
         } catch (e) {
           toast(errorMessage(e), true);
         }
@@ -549,6 +675,29 @@ async function regenerate(): Promise<void> {
   }
 }
 
+async function retranscribe(): Promise<void> {
+  const d = S.detail;
+  if (!d) return;
+  const ok = await confirmBox(
+    t("重新转写这场会议？", "Transcribe this meeting again?"),
+    t(
+      "用当前识别模型重新识别整段录音，完成后自动重新生成纪要。旧转写会备份在会议文件夹里，旧纪要保留在历史版本中；说话人分组不变时沿用已改的名字，已做的专有名词纠正会重新套用。",
+      "The whole recording is recognized again with the current speech model, then the minutes are rewritten. The old transcript is backed up in the meeting folder and the old minutes stay in history; speaker names are kept when the speaker groups match, and term corrections are reapplied.",
+    ),
+    t("重新转写", "Re-transcribe"),
+    false,
+  );
+  if (!ok) return;
+  try {
+    const job = await api<Job>(meetingPath(d.id, "/retranscribe"), { method: "POST" });
+    S.jobs = [...S.jobs.filter((j) => j.id !== job.id), job];
+    renderDetail(d.id, true);
+    poll();
+  } catch (e) {
+    toast(errorMessage(e), true);
+  }
+}
+
 async function pushMinutes(): Promise<void> {
   if (!S.detail) return;
   try {
@@ -587,9 +736,9 @@ function bindMoreMenu(d: MeetingDetail): void {
   bindMenu("#aMore", "#moreMenu", async (act) => {
     try {
       if (act === "tags") {
-        const tags = await editTags(d.tags ?? []);
+        const tags = await editTags([...new Set([...(d.tags || []), ...(d.business ? [d.business] : [])])]);
         if (!tags) return;
-        await setMeta(d.id, { tags });
+        await setMeta(d.id, { tags: tags.filter(tag => tag !== d.business), business: d.business && tags.includes(d.business) ? d.business : "" });
       } else if (act === "archive") {
         await setMeta(d.id, { archived: !d.archived });
         toast(d.archived ? t("已放回会议列表", "Moved back to the list") : t("已归档", "Archived"));
@@ -741,8 +890,11 @@ function renameSpeakers(suggestions: SpeakerSuggestion[] = []): void {
           `<div class="sp-row"><span class="av" style="background:${color(s.index)}">${esc(initial(s.name))}</span><input class="input" data-i="${s.index}" value="${s.custom ? esc(s.name) : ""}" placeholder="${esc(t(`说话人${s.index + 1}`, `Speaker ${s.index + 1}`))}"></div>`,
       )
       .join("")}
+    <div class="speaker-actions"><button class="btn" id="aGuess">${ICON.spark}${t("让 AI 根据对话猜名字", "Let AI guess names from the conversation")}</button><span id="speakerGuessStatus" class="speaker-guess-status" hidden></span></div>
     ${suggestions.length ? `<p class="hint">${t("AI 猜测仅供参考，已命名的说话人保持原名。请核对后保存。", "AI suggestions may be inaccurate. Existing names are preserved. Review before saving.")}</p>` : ""}
     <div class="modal-foot"><button class="btn" data-close>${t("取消", "Cancel")}</button><button class="btn" id="spSave">${t("仅保存", "Save")}</button>${d.minutes ? `<button class="btn primary" id="spRegen">${t("保存并重新生成纪要", "Save & regenerate minutes")}</button>` : ""}</div>`);
+  $("#aGuess").onclick = guessSpeakers;
+  updateSpeakerGuess(d.id);
   const save = async (regen: boolean) => {
     const names = $$<HTMLInputElement>("#modalBody input").map((x) => x.value.trim());
     try {

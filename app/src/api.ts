@@ -32,6 +32,7 @@ export interface MeetingSummary {
   speakers: string[];
   /** 会议管理（新版后端才有） */
   tags?: string[];
+  business?: string;
   archived?: boolean;
   size_bytes?: number;
   has_audio?: boolean;

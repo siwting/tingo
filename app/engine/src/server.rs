@@ -169,8 +169,23 @@ impl AppState {
             recording: Mutex::new(None),
             update: Mutex::new(None),
         });
+        if let Err(e) = state.migrate_config_hotwords() {eprintln!("Cannot move hotwords into the glossary: {e}");}
         if enable_inbox {start_inbox(&state);}
         state
+    }
+
+    /// 热词和名词库已经合并：配置文件里的 hotwords（旧版设置页、手改的配置）搬进名词库，
+    /// 每个词成为只有正式名称的词条，再从配置里清掉。重复执行不会重复添加。
+    fn migrate_config_hotwords(&self) -> Result<(), String> {
+        let mut cfg = self.config();
+        if cfg.hotwords.is_empty() { return Ok(()); }
+        let _g = self.workbench_lock.lock().unwrap();
+        let path = self.settings_dir()?.join("glossary.json");
+        let terms = crate::workbench::validate_terms(crate::workbench::read(&path).ok().filter(|v| v.is_array()).unwrap_or(json!([])))?;
+        let (terms, _) = crate::workbench::add_words(terms, &cfg.hotwords)?;
+        crate::workbench::write(&path, &json!(terms))?;
+        cfg.hotwords.clear();
+        config::save(&self.opt.config_path, &cfg).map_err(|e| e.to_string())
     }
 
     fn config(&self) -> Config { config::load(&self.opt.config_path) }
@@ -308,6 +323,11 @@ impl AppState {
                 Value::String(t) => meetings::normalize_title(Some(t)),
                 _ => return Err(bad(tr("标题要是文字", "The title must be text"))),
             };
+        }
+        if let Some(value) = obj.get("business") {
+            let business = value.as_str().ok_or_else(|| bad("业务分类必须是文字"))?;
+            if business.trim().chars().count() > 20 { return Err(bad("业务分类最多20个字")); }
+            meta.business = meetings::normalize_tag(business);
         }
         if let Some(t) = obj.get("tags") {
             let tags: Option<Vec<&str>> = t.as_array().and_then(|a| a.iter().map(Value::as_str).collect());
@@ -506,6 +526,7 @@ impl AppState {
             &cfg.llm,
             meetings::meeting_date(dir),
             &hotwords,
+            &self.settings_dir().map(|d| crate::workbench::corrections(&d)).unwrap_or_default(),
             &cfg.minutes_language,
             Hooks {
                 on_token: &mut |t| self.update(id, |j| j.minutes.push_str(t)),
@@ -521,6 +542,26 @@ impl AppState {
         )?;
         crate::minutes_history::save(dir, &text).map_err(|e| e.to_string())?;
         self.update(id, |j| {j.minutes = text;j.stage="整理待办与洞察".into();});
+        if meetings::read_meta(dir).tags.is_empty() {
+            self.update(id, |j| j.stage = "自动分类".into());
+            let result = crate::workbench::meeting_categories(dir, &cfg.llm).and_then(|categories| {
+                let _guard = self.workbench_lock.lock().unwrap();
+                let mut meta = meetings::read_meta(dir);
+                // Re-read after the model call so concurrent manual changes are retained.
+                if meta.tags.is_empty() {
+                    meta.tags = categories;
+                    meetings::write_meta(dir, &meta).map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.update(id, |j| {
+                    let notice = format!("没能自动分类：{error}");
+                    j.notice = if j.notice.is_empty() { notice } else { format!("{}；{notice}", j.notice) };
+                });
+            }
+        }
+        self.update(id, |j| j.stage = "整理待办与洞察".into());
         enrich_after_summary(self,dir,&cfg);
         self.update(id,|j|j.stage.clear());
         if cfg.obsidian.auto && !cfg.obsidian.vault.trim().is_empty() {
@@ -548,6 +589,46 @@ impl AppState {
             let tr=Transcript::load(&dir.join(TRANSCRIPT_JSON)).map_err(|e|e.to_string())?;
             return self.run_summarize(id,&tr,dir,extra);
         }
+        let tr = self.transcribe_audio(id, audio_path)?;
+        meetings::save_transcript(&tr, dir).map_err(|e| e.to_string())?;
+        self.run_summarize(id, &tr, dir, extra)
+    }
+
+    /// 用当前识别模型重新转写已有录音，再重新生成纪要。
+    /// 旧转写先备份；说话人分组不变时沿用改过的名字；人工纠错重新套用到新原文上。
+    fn run_retranscribe(&self, id: &str, audio_path: &Path, dir: &Path) -> Result<(), String> {
+        let mut tr = self.transcribe_audio(id, audio_path)?;
+        let old_path = dir.join(TRANSCRIPT_JSON);
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        if let Ok(old) = Transcript::load(&old_path) {
+            if old.speakers_in_order() == tr.speakers_in_order() {
+                tr.speaker_names = old.speaker_names.clone();
+            }
+            std::fs::copy(&old_path, dir.join(format!("transcript.before-retranscribe-{stamp}.json"))).map_err(|e| e.to_string())?;
+        }
+        // 「最初识别原文」快照属于旧模型，归档后换成新模型的原文
+        let snapshot = dir.join("transcript.original.json");
+        if snapshot.exists() {
+            std::fs::rename(&snapshot, dir.join(format!("transcript.original.before-retranscribe-{stamp}.json"))).map_err(|e| e.to_string())?;
+        }
+        let state = crate::workbench::read(&dir.join("workbench.json")).unwrap_or_default();
+        let corrections: Vec<(String, String)> = state["corrections"].as_array().into_iter().flatten()
+            .filter_map(|c| Some((c["original"].as_str()?.to_string(), c["replacement"].as_str()?.to_string())))
+            .filter(|(o, _)| !o.is_empty())
+            .collect();
+        if !corrections.is_empty() {
+            tr.save(&snapshot).map_err(|e| e.to_string())?;
+            for s in &mut tr.sentences {
+                for (original, replacement) in &corrections {
+                    s.text = s.text.replace(original, replacement);
+                }
+            }
+        }
+        meetings::save_transcript(&tr, dir).map_err(|e| e.to_string())?;
+        self.run_summarize(id, &tr, dir, &[])
+    }
+
+    fn transcribe_audio(&self, id: &str, audio_path: &Path) -> Result<Transcript, String> {
         self.update(id, |j| j.state = "loading".into());
         let engine = self.engine()?;
         self.update(id, |j| j.state = "transcribing".into());
@@ -559,8 +640,7 @@ impl AppState {
         if tr.sentences.is_empty() {
             return Err(i18n::tr("没有识别出任何语音", "No speech was recognized").into());
         }
-        meetings::save_transcript(&tr, dir).map_err(|e| e.to_string())?;
-        self.run_summarize(id, &tr, dir, extra)
+        Ok(tr)
     }
 }
 
@@ -641,7 +721,8 @@ fn config_json(s: &AppState) -> Value {
         "api": c.llm.api,
         "api_key_set": !key.is_empty(),
         "api_key_hint": hint,
-        "hotwords": c.hotwords,
+        // 只读：名词库里启用词条的正式名称和真实称呼（改用 /api/glossary 编辑）
+        "hotwords": s.processing_config().hotwords,
         "webhook": c.webhook,
         "secret_set": !c.webhook_secret.is_empty(),
         "obsidian": {
@@ -668,6 +749,7 @@ struct ConfigReq {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    /// 旧客户端会带上 hotwords：不再写入配置，新词并入名词库
     #[serde(default)]
     hotwords: Vec<String>,
     #[serde(default)]
@@ -721,12 +803,14 @@ async fn put_config(State(s): State<Shared>, Json(r): Json<ConfigReq>) -> ApiRes
     if let Some(k) = r.api_key {
         c.llm.api_key = k.trim().into();
     }
-    c.hotwords = r
-        .hotwords
-        .iter()
-        .map(|w| w.trim().to_string())
-        .filter(|w| !w.is_empty())
-        .collect();
+    if !r.hotwords.is_empty() {
+        let _g = s.workbench_lock.lock().unwrap();
+        let path = s.settings_dir().map_err(server_error)?.join("glossary.json");
+        let terms = crate::workbench::validate_terms(crate::workbench::read(&path).ok().filter(|v| v.is_array()).unwrap_or(json!([]))).map_err(server_error)?;
+        let (terms, _) = crate::workbench::add_words(terms, &r.hotwords).map_err(bad)?;
+        crate::workbench::write(&path, &json!(terms)).map_err(server_error)?;
+    }
+    c.hotwords.clear();
     c.webhook = r.webhook.trim().into();
     if let Some(sec) = r.secret {
         c.webhook_secret = sec.trim().into();
@@ -1190,6 +1274,18 @@ async fn post_process(
     let job = Job::new("process", &id, "loading");
     s.start_job(job.clone())?;
     spawn_job(&s, &job.id, move |st, id| st.run_process(id, &audio, &dir, &[]));
+    Ok(Json(job))
+}
+
+async fn post_retranscribe(
+    State(s): State<Shared>,
+    UrlPath(id): UrlPath<String>,
+) -> ApiResult<Json<Job>> {
+    let dir = s.idle_folder(&id)?;
+    let audio = meetings::find_audio(&dir).ok_or_else(|| bad(tr("没有录音文件，无法重新转写", "No recording file, so it can't be transcribed again")))?;
+    let job = Job::new("process", &id, "loading");
+    s.start_job(job.clone())?;
+    spawn_job(&s, &job.id, move |st, id| st.run_retranscribe(id, &audio, &dir));
     Ok(Json(job))
 }
 
@@ -2107,6 +2203,7 @@ pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/api/workbench/inbox", get(inbox_get).put(inbox_put))
         .route("/api/glossary", get(glossary_get).put(glossary_put))
+        .route("/api/glossary/words", post(glossary_add_words))
         .route("/api/workbench/ask", get(questions_get).post(workbench_ask))
         .route("/api/meetings/{id}/insights", post(workbench_insights))
         .route("/api/meetings/{id}/workbench", get(workbench_get).put(workbench_put))
@@ -2136,6 +2233,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/meetings/{id}/minutes/history/{version}", delete(delete_minutes_history))
         .route("/api/meetings/{id}/summarize", post(post_summarize))
         .route("/api/meetings/{id}/process", post(post_process))
+        .route("/api/meetings/{id}/retranscribe", post(post_retranscribe))
         .route("/api/meetings/{id}/push", post(post_push))
         .route("/api/meetings/{id}/reveal", post(reveal))
         .route("/api/meetings/{id}/obsidian", post(post_obsidian))
@@ -2226,6 +2324,25 @@ mod tests {
             sample_dir: base.join("sample"),
         });
         (state, root, trash)
+    }
+
+    #[tokio::test]
+    async fn config_hotwords_move_into_glossary() {
+        let (s, root, _) = test_state("hotword-migration");
+        let terms = json!([{"name":"袁夕华","aliases":["夕华"],"errors":["西华"],"enabled":true}]);
+        crate::workbench::write(&s.settings_dir().unwrap().join("glossary.json"), &terms).unwrap();
+        let mut cfg = s.config();
+        cfg.hotwords = vec!["夕华".into(), "Kafka".into()];
+        config::save(&s.opt.config_path, &cfg).unwrap();
+        let next = AppState::reader(Options {root:root.clone(),config_path:s.opt.config_path.clone(),models_dir:s.opt.models_dir.clone(),recorder_bin:s.opt.recorder_bin.clone(),version:"test".into(),sample_dir:s.opt.sample_dir.clone()});
+        assert!(next.config().hotwords.is_empty());
+        let names: Vec<String> = serde_json::from_value::<Vec<crate::workbench::Term>>(glossary_get(State(next.clone())).await.unwrap().0).unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["袁夕华", "Kafka"]);
+        assert_eq!(crate::workbench::corrections(&next.settings_dir().unwrap()), [("西华".to_string(), "袁夕华".to_string())]);
+        // Saving other settings with a stale hotword list from an old client adds, never removes.
+        let added = glossary_add_words(State(next.clone()), Json(json!({"words":["星河","Kafka"]}))).await.unwrap().0;
+        assert_eq!(added["added"], 1);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
     #[tokio::test]
@@ -2420,6 +2537,29 @@ mod tests {
     }
 
     #[test]
+    fn manual_business_survives_automatic_metadata_updates() {
+        let (s, root, _) = test_state("business");
+        let id = "2026-10-01_0900_业务";
+        let dir = meeting(&root, id, &[]);
+        assert_eq!(meeting_json(&dir)["business"], "");
+        let result = s.update_meta(id, &json!({"business":"  会员业务  "})).unwrap();
+        assert_eq!(result["business"], "会员业务");
+        s.update_meta(id, &json!({"tags":["自动主题"],"title":"自动标题","archived":true})).unwrap();
+        assert_eq!(meeting_json(&dir)["business"], "会员业务");
+        let mut meta = meetings::read_meta(&dir);
+        meta.tags.push("新自动分类".into());
+        meetings::write_meta(&dir, &meta).unwrap();
+        assert_eq!(meetings::read_meta(&dir).business, "会员业务");
+        assert_eq!(status(s.update_meta(id, &json!({"business":12}))), StatusCode::BAD_REQUEST);
+        assert_eq!(status(s.update_meta(id, &json!({"business":"长".repeat(21)}))), StatusCode::BAD_REQUEST);
+        let result = s.update_meta(id, &json!({"business":""})).unwrap();
+        assert_eq!(result["business"], "");
+        assert_eq!(result["tags"], json!(["自动主题","新自动分类"]));
+        assert_eq!(result["archived"], true);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn delete_meeting_and_audio() {
         let (s, root, trash) = test_state("delete");
         let a = meeting(&root, "2026-10-01_0900_a", &[("录音.m4a", 100), ("system.wav", 30), ("mic.wav", 20), (MINUTES, 5), ("a.pdf", 5)]);
@@ -2572,7 +2712,10 @@ mod tests {
         let new_root = root.parent().unwrap().join("new-library");
         let _ = storage_location(State(s.clone()), Json(json!({"root":new_root}))).await.unwrap();
         let next = AppState::reader(Options {root:new_root,config_path:s.opt.config_path.clone(),models_dir:s.opt.models_dir.clone(),recorder_bin:s.opt.recorder_bin.clone(),version:"test".into(),sample_dir:s.opt.sample_dir.clone()});
-        assert_eq!(inbox_get(State(next.clone())).await.unwrap().0, inbox);
+        let restored_inbox = inbox_get(State(next.clone())).await.unwrap().0;
+        assert_eq!(restored_inbox["enabled"], inbox["enabled"]);
+        assert_eq!(restored_inbox["directories"], inbox["directories"]);
+        assert_eq!(restored_inbox["scan_errors"], json!([]));
         assert_eq!(glossary_get(State(next.clone())).await.unwrap().0, terms);
         assert!(next.processing_config().hotwords.contains(&"真实称呼".to_string()));
         assert_eq!(crate::workbench::read(&next.settings_dir().unwrap().join("inbox-state.json")).unwrap()["source"]["state"], "done");
@@ -2582,6 +2725,22 @@ mod tests {
         let _ = inbox_put(State(next.clone()), Json(json!({"enabled":false,"directories":[]}))).await.unwrap();
         assert_eq!(glossary_get(State(s.clone())).await.unwrap().0, json!([]));
         assert_eq!(inbox_get(State(s.clone())).await.unwrap().0["directories"], json!([]));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[tokio::test]
+    async fn inbox_flags_unreadable_folder_as_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+        let (s, root, _) = test_state("inbox-permission");
+        let locked = root.parent().unwrap().join("locked");
+        let missing = root.parent().unwrap().join("missing");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        crate::workbench::write(&root.join("inbox-settings.json"), &json!({"enabled":true,"directories":[locked, missing]})).unwrap();
+        let errors = inbox_get(State(s.clone())).await.unwrap().0["scan_errors"].clone();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(errors[0]["permission_denied"], json!(true));
+        assert_eq!(errors[1]["permission_denied"], json!(false));
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 

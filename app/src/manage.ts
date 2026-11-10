@@ -21,7 +21,7 @@ export const fmtBytes = (n: number | null | undefined): string => {
 /** 所有会议用过的标签，按使用次数排 */
 export function allTags(): { tag: string; count: number }[] {
   const m = new Map<string, number>();
-  for (const x of S.meetings) for (const tg of x.tags ?? []) m.set(tg, (m.get(tg) ?? 0) + 1);
+  for (const x of S.meetings) for (const tg of new Set([...(x.tags || []), ...(x.business ? [x.business] : [])])) m.set(tg, (m.get(tg) ?? 0) + 1);
   return [...m.entries()].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
@@ -72,7 +72,7 @@ export function editTags(current: string[], title = t("编辑标签", "Edit tags
     const input = $<HTMLInputElement>("#tgNew");
     input.onkeydown = (e) => {
       const v = input.value.trim();
-      if (e.key === "Enter" && v) {
+      if (e.key === "Enter" && !e.isComposing && v) {
         e.preventDefault();
         if (!known.includes(v)) known.push(v);
         sel.add(v);
@@ -118,7 +118,7 @@ export function renameBox(current: string): Promise<string | null | undefined> {
   });
 }
 
-export const setMeta = (id: string, patch: { title?: string | null; tags?: string[]; archived?: boolean }) =>
+export const setMeta = (id: string, patch: { title?: string | null; tags?: string[]; business?: string; archived?: boolean }) =>
   api<MeetingSummary>(meetingPath(id, "/meta"), { method: "PUT", json: patch });
 
 export const deleteMeeting = (id: string) => api(meetingPath(id), { method: "DELETE" });
@@ -129,3 +129,26 @@ export type BatchAction = "archive" | "unarchive" | "tag_add" | "tag_remove" | "
 
 export const batch = (ids: string[], action: BatchAction, tag?: string) =>
   api<{ ok: number; failed: { id: string; error: string }[]; freed_bytes: number }>("/api/meetings/batch", { json: { ids, action, tag } });
+
+/** Business names are manually assigned and reused across meetings. */
+export function allBusinesses(): string[] {
+  return [...new Set(S.meetings.map(m => m.business || "").filter(Boolean))].sort((a,b) => a.localeCompare(b));
+}
+
+export function editBusiness(current: string, title = t("设置业务分类", "Set business")): Promise<string | null> {
+  return new Promise(resolve => {
+    openModal(`<h3>${esc(title)}</h3>
+      <p class="hint">${t("选择已有业务，或输入新的业务名称；留空可清除。", "Choose an existing business or enter a new name. Leave empty to clear.")}</p>
+      <label class="field">${t("业务名称", "Business name")}<input class="input" id="businessName" maxlength="20" value="${esc(current)}" placeholder="${t("例如：会员业务、电话助手", "For example: Membership, Phone assistant")}"></label>
+      <div id="businessChoices">${allBusinesses().map(name => `<button class="tag-chip" data-business="${esc(name)}">${esc(name)}</button>`).join(" ")}</div>
+      <div class="modal-foot"><button class="btn" id="businessCancel">${t("取消", "Cancel")}</button><button class="btn" id="businessClear">${t("清除", "Clear")}</button><button class="btn primary" id="businessSave">${t("保存", "Save")}</button></div>`);
+    const input = $<HTMLInputElement>("#businessName");
+    input.focus();
+    const save = () => { const value = input.value.trim(); closeModal(); resolve(value); };
+    $("#businessSave").onclick = save;
+    $("#businessClear").onclick = () => { input.value = ""; input.focus(); };
+    $("#businessCancel").onclick = () => { closeModal(); resolve(null); };
+    input.onkeydown = e => { if (e.key === "Enter" && !e.isComposing) save(); };
+    $$<HTMLButtonElement>("#businessChoices button").forEach(b => b.onclick = () => { input.value = b.dataset.business || ""; input.focus(); });
+  });
+}

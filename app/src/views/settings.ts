@@ -324,7 +324,7 @@ const tabs = (): { id: Tab; name: string; icon: keyof typeof ICON }[] => [
       ]
     : []),
   { id: "lang", name: t("语言", "Language"), icon: "globe" },
-  { id: "hotwords", name: t("热词", "Hotwords"), icon: "spark" },
+  { id: "hotwords", name: t("名词库", "Glossary"), icon: "spark" },
   { id: "push", name: t("推送到群", "Share to chat"), icon: "send" },
   { id: "obsidian", name: "Obsidian", icon: "vault" },
   { id: "storage", name: t("存储", "Storage"), icon: "folder" },
@@ -361,8 +361,8 @@ function subtitle(tab: Tab, x: Ctx): string {
       return S.env?.asr_model ?? "Paraformer-large";
     case "hotwords":
       return c.hotwords.length
-        ? t(`${c.hotwords.length} 个`, `${c.hotwords.length} words`)
-        : t("热词与名词库", "Words and glossary");
+        ? t(`${c.hotwords.length} 个热词`, `${c.hotwords.length} hotwords`)
+        : t("人名、术语、纠错", "Names, terms, corrections");
     case "push":
       return c.webhook ? platformOf(c.webhook) : t("未设置", "Not set");
     case "obsidian":
@@ -406,7 +406,6 @@ async function save(
         base_url: c.base_url,
         model: c.model,
         api_key: null,
-        hotwords: c.hotwords,
         webhook: c.webhook,
         secret: null,
         obsidian: c.obsidian,
@@ -1141,68 +1140,25 @@ function panelLlm(x: Ctx): void {
     );
 }
 
-function panelHotwords(x: Ctx): void {
-  const hot = [...x.c.hotwords];
+function panelHotwords(_x: Ctx): void {
   const nano =
     S.env?.asr_model?.includes("MLX") || S.env?.asr_model === "Fun-ASR-Nano";
   $("#sPanel").innerHTML = `
-    <h2>${t("热词", "Hotwords")}</h2>
-    <p class="hint">${t("人名、项目代号、内部系统名、行业术语。每场会议都生效，录音时也可以给单场会议临时加几个。", "Names, project codes, internal systems, jargon. Applied to every meeting; you can add a few more per meeting when recording.")}</p>
-    <div class="tags" id="sTags"><input id="sTagInput" placeholder="${t("输入后回车添加，可以一次粘贴多个（用逗号或空格隔开）", "Type and press Enter — paste several at once, separated by commas or spaces")}"></div>
+    <h2>${t("名词库", "Glossary")}</h2>
+    <p class="hint">${t("人名、项目代号、内部系统名、行业术语。改动立即保存，每场会议都生效；录音时也可以给单场会议临时加几个。", "Names, project codes, internal systems, jargon. Changes save right away and apply to every meeting; you can add a few more per meeting when recording.")}</p>
+    <div id="glossaryPanel"></div>
     <div class="note-box">${
       nano
         ? t(
-            "当前识别模型会在识别时直接用上这些词；生成纪要时也会交给大模型核对同音字。",
-            "The selected model uses these words during recognition; they're also given to the LLM as a glossary when writing minutes.",
+            "正式名称和真实称呼会在识别时直接用上，生成纪要时也会交给大模型核对同音字；错误写法只交给大模型，用来纠正纪要。",
+            "Names and aliases are used during recognition and given to the LLM when writing minutes; misheard forms only go to the LLM to correct the minutes.",
           )
         : t(
             "当前识别模型不支持热词，这些词会作为术语表交给大模型，在写纪要时纠正同音字（比如“历史中单”→“历史工单”）。想在识别时就用上，可以在「识别模型」里换成 Fun-ASR-Nano。",
             "The current speech model doesn't take hotwords, so they're given to the LLM as a glossary to fix misheard words in the minutes. To use them during recognition, switch to Fun-ASR-Nano under Speech model.",
           )
-    }</div>
-    ${panelFoot()}`;
-  if (S.env?.workbench) {
-    $("#sPanel").insertAdjacentHTML(
-      "beforeend",
-      '<div id="glossaryPanel"></div>',
-    );
-    void mountGlossary($("#glossaryPanel"));
-  }
-  const tagInput = $<HTMLInputElement>("#sTagInput");
-  const drawTags = () => {
-    $$("#sTags .chip").forEach((el) => el.remove());
-    hot.forEach((w, i) => {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.innerHTML = `${esc(w)}<button class="x" title="${t("删除", "Remove")}">×</button>`;
-      $("button", chip).onclick = () => {
-        hot.splice(i, 1);
-        drawTags();
-      };
-      tagInput.before(chip);
-    });
-  };
-  drawTags();
-  const addPending = () => {
-    for (const w of tagInput.value.split(/[,，、\s]+/))
-      if (w && !hot.includes(w)) hot.push(w);
-    tagInput.value = "";
-  };
-  tagInput.onkeydown = (e) => {
-    const v = tagInput.value.trim();
-    if ((e.key === "Enter" || e.key === "," || e.key === "，") && v) {
-      e.preventDefault();
-      addPending();
-      drawTags();
-    } else if (e.key === "Backspace" && !v && hot.length) {
-      hot.pop();
-      drawTags();
-    }
-  };
-  $("#sSave").onclick = () => {
-    addPending();
-    save(x, { hotwords: hot }, "hotwords");
-  };
+    }</div>`;
+  void mountGlossary($("#glossaryPanel"));
 }
 
 function panelPush(x: Ctx): void {

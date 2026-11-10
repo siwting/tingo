@@ -9,6 +9,15 @@ import sys
 from pathlib import Path
 
 
+def timed_chunks(audio, rate, split):
+    """Keep inference padding out of timestamps, which describe source audio."""
+    duration = len(audio) / rate
+    for chunk, offset in split(audio, rate, chunk_duration=60):
+        end = min(duration, offset + len(chunk) / rate)
+        if offset < end:
+            yield chunk, offset, end
+
+
 def main():
     request = json.load(sys.stdin)
     model_path = Path(os.environ.get('TINGO_MLX_MODEL', ''))
@@ -33,9 +42,9 @@ def main():
             if not 0 <= start <= end <= len(samples)/rate + 0.01:
                 raise ValueError('Invalid VAD range')
             audio = samples[round(start*rate):round(end*rate)]
-            for chunk, offset in split_audio_into_chunks(audio, rate, chunk_duration=60):
+            for chunk, offset, chunk_end in timed_chunks(audio, rate, split_audio_into_chunks):
                 result = model.generate(chunk, max_tokens=2048, language=(request.get('language') or 'auto') if model_type == 'sensevoice' else {'zh':'Chinese','en':'English'}.get(request.get('language')), verbose=False, hotwords=request.get('hotwords', []))
-                spans.append({'start': float(start+offset), 'end': float(start+offset+len(chunk)/rate), 'text': result.text.strip()})
+                spans.append({'start': float(start+offset), 'end': float(min(end, start+chunk_end)), 'text': result.text.strip()})
     json.dump(spans, sys.stdout, ensure_ascii=False)
 
 def download(repo, destination):

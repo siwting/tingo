@@ -43,7 +43,7 @@ export function renderMarkdown(
         const terms = closed ? parseTerms(body.join("\n")) : [];
         if (terms.length)
           out.push(`<div class="terms"><div class="terms-head"><b>${tl(en, "人名与术语", "Names & terms")}</b>${
-            en === undefined ? `<button class="link-btn terms-add" type="button">${t("全部加入热词", "Add all to hotwords")}</button>` : ""
+            en === undefined ? `<button class="link-btn terms-add" type="button">${t("全部加入名词库", "Add all to glossary")}</button>` : ""
           }</div><div class="terms-list">${terms
             .map(
               (x) =>

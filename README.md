@@ -259,6 +259,7 @@ pnpm dev                             # 浏览器打开 http://localhost:1420，�
 # 桌面版（Tauri + Rust）
 pnpm tauri dev                       # 开发窗口
 pnpm tauri build                     # 打包 .app / .dmg
+bash scripts/build-macos-local.sh --install   # 本机自用：固定证书签名并装进 /Applications，重新构建后「完全磁盘访问」等授权不会失效
 cd engine && cargo test              # Rust 核心库测试
 cargo run --release --example serve -- <模型目录> <录音组件> 8765   # 只起后端，配合 pnpm dev
 ```
