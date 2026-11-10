@@ -167,6 +167,23 @@ pub fn normalize_tags<S: AsRef<str>>(tags: &[S]) -> Vec<String> {
     out
 }
 
+/// 录音中标记的重点时刻（毫秒，升序）。和 meta.json 分开存：meta 只写标题、标签、归档三项。
+pub const MARKS: &str = "marks.json";
+
+pub fn read_marks(dir: &Path) -> Vec<u64> {
+    std::fs::read_to_string(dir.join(MARKS))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<u64>>(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_marks(dir: &Path, marks: &[u64]) -> std::io::Result<()> {
+    let mut marks = marks.to_vec();
+    marks.sort_unstable();
+    marks.dedup();
+    std::fs::write(dir.join(MARKS), serde_json::to_vec(&marks).map_err(std::io::Error::other)?)
+}
+
 /// 读 meta.json；没有、读不出或格式不对的字段都按默认值
 pub fn read_meta(dir: &Path) -> Meta {
     let Some(v) = std::fs::read_to_string(dir.join(META))
@@ -394,6 +411,18 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_roundtrip_sorted_and_tolerate_missing_or_broken_files() {
+        let dir = std::env::temp_dir().join(format!("tingo-marks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_marks(&dir).is_empty());
+        write_marks(&dir, &[9000, 1200, 9000]).unwrap();
+        assert_eq!(read_marks(&dir), vec![1200, 9000]);
+        std::fs::write(dir.join(MARKS), "broken").unwrap();
+        assert!(read_marks(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn folder_naming_and_listing() {

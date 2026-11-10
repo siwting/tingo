@@ -58,6 +58,15 @@ function bind(box: HTMLElement): void {
 
 /** 侧边栏：所有任务的紧凑列表；首页：后台任务的大卡片（录音本身在玻璃面板里，不重复显示） */
 export function renderTasks(): void {
+  const homeLabel = $maybe('.nav [data-nav="home"] [data-t]');
+  if (homeLabel) {
+    const [zh, en] = S.job.state === "recording" ? ["返回录音", "Back to recording"] : ["新会议", "New meeting"];
+    const label = t(zh, en);
+    if (homeLabel.textContent !== label) {
+      homeLabel.dataset.t = `${zh}|${en}`;
+      homeLabel.textContent = label;
+    }
+  }
   const side = $maybe("#sideTasks");
   if (side) {
     const list = S.jobs.filter((j) => j.state !== "idle");

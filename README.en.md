@@ -28,6 +28,14 @@ Looking for a **free, open-source, local alternative to Otter.ai, Granola, Firef
 
 > The meetings, names and numbers in the screenshots are fictional demo data.
 
+## v0.5.4 · Live transcription and recording workspace
+
+- Follow live transcripts with provisional speaker labels, scroll back through the meeting, and mark key moments.
+- Automatic gain helps the recognizer pick up quiet speech.
+- Settings keep the menu in place while model discovery runs in the background.
+
+[Download v0.5.4](https://github.com/tancheng33/tingo/releases/tag/v0.5.4). In-app updates are available from v0.5.2 onward.
+
 ## v0.5.3: flowing background and update fallback
 
 - The home gradient flows gently while the recording card stays still, respecting Reduce Motion.

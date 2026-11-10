@@ -8,18 +8,29 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::asr::{Engine, Segment, SR};
-use crate::audio::{duck_mix_default, find_cut, GrowingWav, MAX_CHUNK_S, MIN_CHUNK_S, SEARCH_S};
+use sherpa_onnx::VoiceActivityDetector;
+use crate::audio::{
+    duck_mix_default, find_cut, find_live_cut, GrowingWav, LIVE_MAX_CHUNK_S, LIVE_MIN_CHUNK_S, MAX_CHUNK_S, MIN_CHUNK_S, SEARCH_S,
+};
 use crate::cluster::cluster;
 use crate::transcript::{Sentence, Transcript};
 
 const MIX_MARGIN_S: f64 = 1.0; // 混音时往前多读一点，让"让路"的保持时间跨片段连续
 const LOOKAHEAD_S: f64 = 0.2; // 文件末尾先不处理，留给"提前关麦克风"看后面的数据
+const LIVE_STEP_S: f64 = 0.25; // 边录边转：攒够这么多新音频就混一次、看看能不能切
+const LIVE_POLL: Duration = Duration::from_millis(250);
+/// 录音中给说话人临时编号：和已有说话人的声纹余弦相似度够高就归进去，否则算新的一位。
+/// 结束后仍用 [`cluster`] 整场重新聚类，以那次为准。
+const LIVE_SAME_SPEAKER: f32 = 0.7;
 
 #[derive(Default)]
 pub struct Timings {
     pub tail_s: f64,
     pub cluster_s: f64,
     pub segments: usize,
+    /// 边录边转：一句话说完到识别出来的平均、最长延迟（秒）
+    pub live_lag_avg_s: f64,
+    pub live_lag_max_s: f64,
 }
 
 #[derive(Default)]
@@ -28,6 +39,10 @@ pub struct Chunker {
     pending_start: f64, // pending 第一个样本对应的秒数
     pub segments: Vec<Segment>,
     pub timings: Timings,
+    /// 边录边转：遇到停顿就切（见 [`find_live_cut`]），而不是攒 10～30 秒
+    live: bool,
+    /// 已经切走的样本数（pending 第一个样本的绝对位置），和静音检测的位置对齐用
+    drained: usize,
 }
 
 impl Chunker {
@@ -49,6 +64,12 @@ impl Chunker {
         if self.pending.len() < min_len {
             return None;
         }
+        if self.live && !last {
+            let max = (LIVE_MAX_CHUNK_S * SR as f64) as usize;
+            let window = &self.pending[..self.pending.len().min(max)];
+            let cut = find_live_cut(window, LIVE_MIN_CHUNK_S, LIVE_MAX_CHUNK_S)?;
+            return Some(self.take(cut));
+        }
         // 每段最长 MAX_CHUNK_S：处理落后时也不会攒出一个巨大的段
         let max = (MAX_CHUNK_S * SR as f64) as usize;
         let window = &self.pending[..self.pending.len().min(max)];
@@ -63,10 +84,16 @@ impl Chunker {
                 SEARCH_S,
             )?
         };
+        Some(self.take(cut))
+    }
+
+    /// 切走 pending 的前 `cut` 个样本，返回这段和它的起始秒数
+    fn take(&mut self, cut: usize) -> (Vec<f32>, f64) {
         let chunk: Vec<f32> = self.pending.drain(..cut).collect();
         let offset = self.pending_start;
         self.pending_start += cut as f64 / SR as f64;
-        Some((chunk, offset))
+        self.drained += cut;
+        (chunk, offset)
     }
 
     pub fn transcribe(&mut self, engine: &Engine, chunk: &[f32], offset_s: f64) -> Result<Vec<Segment>, String> {
@@ -175,8 +202,127 @@ struct LiveState {
     tracks: Vec<(String, GrowingWav)>,
     mixed_until: f64,
     chunker: Chunker,
-    lines: Vec<(u64, String)>,
+    /// 静音检测：找出每句话在哪结束，说完就切；加载失败时退回按音量找停顿
+    vad: Option<VoiceActivityDetector>,
+    vad_fed: usize,
+    speech_ends: Vec<usize>,
+    lines: Vec<LiveLine>,
+    speakers: LiveSpeakers,
+    /// 每句从说完到识别出来用了几秒
+    lags: Vec<f64>,
     error: Option<String>,
+}
+
+/// 录音中实时显示的一句
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveLine {
+    pub start_ms: u64,
+    /// 临时说话人编号（第一个开口的是 0）；太短提不出声纹时沿用上一句
+    pub speaker: Option<usize>,
+    pub text: String,
+}
+
+/// 录音中逐句给说话人编号：每位说话人记一个平均声纹
+#[derive(Default)]
+struct LiveSpeakers {
+    centroids: Vec<(Vec<f32>, usize)>,
+}
+
+impl LiveSpeakers {
+    fn assign(&mut self, embeddings: &[Vec<f32>]) -> Option<usize> {
+        let dim = embeddings.first()?.len();
+        let mut mean = vec![0.0f32; dim];
+        for e in embeddings {
+            let n = norm(e);
+            for (m, v) in mean.iter_mut().zip(e) {
+                *m += v / n;
+            }
+        }
+        let best = self
+            .centroids
+            .iter()
+            .enumerate()
+            .map(|(i, (c, _))| (i, cosine(c, &mean)))
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((i, sim)) if sim >= LIVE_SAME_SPEAKER => {
+                let (c, n) = &mut self.centroids[i];
+                let k = embeddings.len();
+                for (cv, mv) in c.iter_mut().zip(&mean) {
+                    *cv = (*cv * *n as f32 + mv) / (*n + k) as f32;
+                }
+                *n += k;
+                Some(i)
+            }
+            _ => {
+                self.centroids.push((mean, embeddings.len()));
+                Some(self.centroids.len() - 1)
+            }
+        }
+    }
+}
+
+fn norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9)
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() / (norm(a) * norm(b))
+}
+
+impl LiveState {
+    /// 边录边转的下一段：在刚说完的那句话后面一点切（句尾留 0.15 秒静音），这样说完一两秒就能出字；
+    /// 一直没人说话就把静音切掉；一直在说、没有停顿时攒到 12 秒强制切。
+    fn next_live_chunk(&mut self) -> Option<(Vec<f32>, f64)> {
+        let Some(vad) = &self.vad else { return self.chunker.next_chunk(false) };
+        let c = &mut self.chunker;
+        let total = c.drained + c.pending.len();
+        // 静音检测也看放大后的声音：新来的音频连同前面约 1 秒一起算增益，只喂新的部分
+        let new_from = self.vad_fed.saturating_sub(c.drained).min(c.pending.len());
+        let ctx = new_from.saturating_sub(SR);
+        let leveled = crate::audio::agc(&c.pending[ctx..]);
+        for part in leveled[new_from - ctx..].chunks(512) {
+            vad.accept_waveform(part);
+        }
+        self.vad_fed = total;
+        while let Some(seg) = vad.front() {
+            self.speech_ends.push(seg.start().max(0) as usize + seg.n().max(0) as usize);
+            vad.pop();
+        }
+        let tail = (0.15 * SR as f64) as usize;
+        let min = SR / 2;
+        if let Some(cut) = self.speech_ends.iter().rev().map(|e| (e + tail).min(total)).find(|&e| e >= c.drained + min) {
+            self.speech_ends.retain(|&e| e > cut);
+            return Some(c.take(cut - c.drained));
+        }
+        let pending = c.pending.len();
+        if !vad.detected() && self.speech_ends.is_empty() && pending >= 3 * SR {
+            // 没人说话：留最后半秒（可能是刚开口），前面的静音直接切走
+            return Some(c.take(pending - SR / 2));
+        }
+        let max = (LIVE_MAX_CHUNK_S * SR as f64) as usize;
+        if pending >= max {
+            let cut = find_cut(&c.pending[..max], true, LIVE_MAX_CHUNK_S, 3.0)?;
+            self.speech_ends.retain(|&e| e > c.drained + cut);
+            return Some(c.take(cut));
+        }
+        None
+    }
+
+    /// 刚识别出的几段：编上临时说话人，记下说完到识别出来的延迟
+    fn add_lines(&mut self, segs: &[Segment]) {
+        let now = self.tracks.iter_mut().map(|(_, t)| t.seconds()).fold(f64::INFINITY, f64::min);
+        for g in segs {
+            if now.is_finite() {
+                self.lags.push((now - g.end_ms as f64 / 1000.0).max(0.0));
+            }
+            let speaker = self
+                .speakers
+                .assign(&g.embeddings)
+                .or_else(|| self.lines.last().and_then(|l| l.speaker));
+            self.lines.push(LiveLine { start_ms: g.start_ms, speaker, text: g.text.clone() });
+        }
+    }
 }
 
 impl LiveState {
@@ -190,7 +336,7 @@ impl LiveState {
             return;
         }
         let commit_end = if last { avail } else { avail - LOOKAHEAD_S };
-        if commit_end - self.mixed_until < if last { 0.05 } else { 1.0 } {
+        if commit_end - self.mixed_until < if last { 0.05 } else { LIVE_STEP_S } {
             return;
         }
         let margin = MIX_MARGIN_S.min(self.mixed_until);
@@ -227,8 +373,13 @@ impl LiveTranscriber {
                 .map(|s| (s.clone(), GrowingWav::new(dir.join(format!("{s}.wav")))))
                 .collect(),
             mixed_until: 0.0,
-            chunker: Chunker::default(),
+            chunker: Chunker { live: true, ..Default::default() },
+            vad: engine.live_vad(),
+            vad_fed: 0,
+            speech_ends: Vec::new(),
             lines: Vec::new(),
+            speakers: LiveSpeakers::default(),
+            lags: Vec::new(),
             error: None,
         };
         let inner = Arc::new(Mutex::new(state));
@@ -238,7 +389,7 @@ impl LiveTranscriber {
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     if !step(&inner, &engine, false) {
-                        std::thread::sleep(Duration::from_secs(1));
+                        std::thread::sleep(LIVE_POLL);
                     }
                 }
             })
@@ -251,15 +402,21 @@ impl LiveTranscriber {
     }
 
     /// 最近识别出的几句，给界面实时显示。
-    pub fn recent(&self, n: usize) -> Vec<(u64, String)> {
+    pub fn recent(&self, n: usize) -> Vec<LiveLine> {
         let s = self.inner.lock().unwrap();
         s.lines[s.lines.len().saturating_sub(n)..].to_vec()
+    }
+
+    /// 从第 `from` 句起的全部句子和总句数：界面只取新增的，长会议也不用每次传整场
+    pub fn lines_from(&self, from: usize) -> (Vec<LiveLine>, usize) {
+        let s = self.inner.lock().unwrap();
+        (s.lines[from.min(s.lines.len())..].to_vec(), s.lines.len())
     }
 
     /// 到目前为止识别出了多少句（有没有新出文字，自动结束录音时用来判断有没有人说话）。
     pub fn line_count(&self) -> usize {
         let s = self.inner.lock().unwrap();
-        s.lines.iter().filter(|(_, t)| !t.trim().is_empty()).count()
+        s.lines.iter().filter(|l| !l.text.trim().is_empty()).count()
     }
 
     /// 录音停止后调用：处理剩下的几秒，统一聚类，返回完整转写。
@@ -285,14 +442,17 @@ impl LiveTranscriber {
                 break;
             };
             let segs = s.chunker.transcribe(engine, &chunk, offset)?;
-            s.lines
-                .extend(segs.into_iter().map(|g| (g.start_ms, g.text)));
+            s.lines.extend(segs.into_iter().map(|g| LiveLine { start_ms: g.start_ms, speaker: None, text: g.text }));
         }
         let mut s = self.inner.lock().unwrap();
         let tail_s = t.elapsed().as_secs_f64();
         let tr = s.chunker.assemble(source);
         let mut timings = std::mem::take(&mut s.chunker.timings);
         timings.tail_s = tail_s;
+        if !s.lags.is_empty() {
+            timings.live_lag_avg_s = s.lags.iter().sum::<f64>() / s.lags.len() as f64;
+            timings.live_lag_max_s = s.lags.iter().copied().fold(0.0, f64::max);
+        }
         Ok((tr, timings))
     }
 }
@@ -303,7 +463,7 @@ fn step(inner: &Mutex<LiveState>, engine: &Engine, last: bool) -> bool {
         let mut s = inner.lock().unwrap();
         if s.error.is_some() { return false; }
         s.mix_new(last);
-        s.chunker.next_chunk(last)
+        if last { s.chunker.next_chunk(true) } else { s.next_live_chunk() }
     };
     let Some((chunk, offset)) = job else {
         return false;
@@ -312,12 +472,30 @@ fn step(inner: &Mutex<LiveState>, engine: &Engine, last: bool) -> bool {
     let segs = engine.transcribe(&chunk, (offset * 1000.0).round() as u64);
     let mut s = inner.lock().unwrap();
     let segs = match segs { Ok(s) => s, Err(e) => { s.error = Some(e); return false; } };
-    s.lines
-        .extend(segs.iter().map(|g| (g.start_ms, g.text.clone())));
+    s.add_lines(&segs);
     s.chunker.segments.extend(segs);
     true
 }
 
 pub fn wav_path(dir: &Path, source: &str) -> PathBuf {
     dir.join(format!("{source}.wav"))
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    #[test]
+    fn live_speakers_reuse_close_voices_and_split_distinct_ones() {
+        let mut s = LiveSpeakers::default();
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0];
+        assert_eq!(s.assign(&[a.clone()]), Some(0));
+        assert_eq!(s.assign(&[b.clone()]), Some(1));
+        // 同一个人的声音略有变化，仍归到第一位
+        assert_eq!(s.assign(&[vec![0.95, 0.1, 0.05], a.clone()]), Some(0));
+        assert_eq!(s.assign(&[b]), Some(1));
+        // 太短提不出声纹：不编号，由调用方沿用上一句
+        assert_eq!(s.assign(&[]), None);
+    }
 }

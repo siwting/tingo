@@ -305,10 +305,10 @@ type Tab =
 
 interface Ctx {
   c: Config;
-  local: LocalProvider[];
   vaults: { name: string; path: string }[];
-  hasAsr: boolean;
 }
+
+let localProviders: Promise<LocalProvider[]> | undefined;
 
 const tabs = (): { id: Tab; name: string; icon: keyof typeof ICON }[] => [
   { id: "llm", name: t("大模型", "LLM"), icon: "bot" },
@@ -399,8 +399,9 @@ async function save(
   tab: Tab,
 ): Promise<void> {
   const c = x.c;
+  const panel = $maybe("#sBody .set-panel");
   try {
-    await api<Config>("/api/config", {
+    const updated = await api<Config>("/api/config", {
       method: "PUT",
       json: {
         base_url: c.base_url,
@@ -413,13 +414,21 @@ async function save(
       },
     });
     // 换了界面语言：侧边栏、页面里写死的文字一起刷新
-    if ("ui_language" in patch && applyLang(patch.ui_language as LangPref)) {
+    const languageChanged = "ui_language" in patch && applyLang(patch.ui_language as LangPref);
+    if (languageChanged) {
       renderShell();
       refreshMeetings();
+      localProviders = undefined;
     }
     toast(t("已保存", "Saved"));
     refreshEnv();
-    renderSettings(tab);
+    if (panel?.isConnected) {
+      renderSettings(tab, updated);
+    } else {
+      const current = $maybe(".set-nav a.on")?.dataset.tab as Tab | undefined;
+      if (current && languageChanged) renderSettings(current, updated);
+      else if (current) updateSettingsNav({ ...x, c: updated }, current);
+    }
   } catch (e) {
     toast(errorMessage(e), true);
   }
@@ -428,47 +437,53 @@ async function save(
 const panelFoot = (extra = "") =>
   `<div class="panel-foot">${extra}<span class="grow"></span><button class="btn primary" id="sSave">${t("保存", "Save")}</button></div>`;
 
-export async function renderSettings(tab: string = "llm"): Promise<void> {
-  main().innerHTML = `<div class="page"><div class="page-head"><div><h1>${t("设置", "Settings")}</h1><div class="sub">${t("保存在本机配置文件里", "Stored in a local config file")}</div></div><span class="grow"></span>${
-    onboarded()
-      ? ""
-      : `<a class="btn" href="#/welcome/llm">${t("回到新手引导", "Back to the tour")} ${ICON.chevron}</a>`
-  }</div><div id="sBody"></div></div>`;
-  let x: Ctx;
-  try {
-    const [c, local, vaults, hasAsr] = await Promise.all([
-      api<Config>("/api/config"),
-      api<LocalProvider[]>("/api/llm/providers").catch(() => []),
-      api<{ name: string; path: string }[]>("/api/obsidian/vaults").catch(
-        () => [],
-      ),
-      api("/api/models").then(
-        () => true,
-        () => false, // Python 版没有可切换的识别模型
-      ),
-      refreshEnv(),
-    ]);
-    x = { c, local, vaults, hasAsr };
-  } catch (e) {
-    toast(errorMessage(e), true);
-    return;
+function settingsHeader(): string {
+  return `<div><h1>${t("设置", "Settings")}</h1><div class="sub">${t("保存在本机配置文件里", "Stored in a local config file")}</div></div><span class="grow"></span>${
+    onboarded() ? "" : `<a class="btn" href="#/welcome/llm">${t("回到新手引导", "Back to the tour")} ${ICON.chevron}</a>`
+  }`;
+}
+
+function updateSettingsNav(x: Ctx, cur: Tab): void {
+  for (const { id, name } of tabs()) {
+    const link = $maybe(`.set-nav [data-tab="${id}"]`);
+    if (!link) continue;
+    link.classList.toggle("on", id === cur);
+    $("b", link).textContent = name;
+    $("small", link).textContent = subtitle(id, x);
   }
-  if (!location.hash.startsWith("#/settings")) return; // 加载期间已经切走
-  const list = tabs().filter((tb) => tb.id !== "asr" || x.hasAsr);
+}
+
+export async function renderSettings(tab: string = "llm", updated?: Config): Promise<void> {
+  const list = tabs().filter((tb) => tb.id !== "asr" || S.env?.models_downloadable);
   const cur = (list.find((tb) => tb.id === tab) ?? list[0]).id;
-  $("#sBody").innerHTML = `
-    <div class="set-layout">
-      <nav class="set-nav">
-        ${list
-          .map(
-            (tb) =>
-              `<a href="#/settings/${tb.id}" class="${tb.id === cur ? "on" : ""}"><span class="set-ico">${ICON[tb.icon]}</span><span class="set-txt"><b>${tb.name}</b><small>${esc(subtitle(tb.id, x))}</small></span></a>`,
-          )
-          .join("")}
-      </nav>
-      <section class="card s-card set-panel" id="sPanel"></section>
-    </div>`;
-  PANELS[cur](x);
+  if (!$maybe("#sBody")) {
+    localProviders = undefined;
+    main().innerHTML = `<div class="page"><div class="page-head" id="sHead">${settingsHeader()}</div>
+      <div class="set-layout" id="sBody"><nav class="set-nav">${list.map(
+        ({ id, name, icon }) => `<a href="#/settings/${id}" data-tab="${id}"><span class="set-ico">${ICON[icon]}</span><span class="set-txt"><b>${name}</b><small>&nbsp;</small></span></a>`,
+      ).join("")}</nav><section class="set-panel"></section></div></div>`;
+  } else if (updated) {
+    $("#sHead").innerHTML = settingsHeader();
+  }
+
+  $$(".set-nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === cur));
+  const panel = document.createElement("section");
+  panel.id = "sPanel";
+  panel.className = "card s-card set-panel";
+  panel.innerHTML = `<h2>${list.find((tb) => tb.id === cur)?.name}</h2><p class="hint" role="status">${t("正在加载…", "Loading…")}</p>`;
+  $("#sBody .set-panel").replaceWith(panel);
+  try {
+    const c = updated ?? await api<Config>("/api/config");
+    if (!panel.isConnected) return;
+    const x: Ctx = { c, vaults: [] };
+    updateSettingsNav(x, cur);
+    if (cur === "obsidian") {
+      x.vaults = await api<Ctx["vaults"]>("/api/obsidian/vaults").catch(() => []);
+    }
+    if (panel.isConnected) await PANELS[cur](x);
+  } catch (e) {
+    if (panel.isConnected) $("p", panel).textContent = errorMessage(e);
+  }
 }
 
 const PANELS: Record<Tab, (x: Ctx) => void | Promise<void>> = {
@@ -569,6 +584,7 @@ async function panelStorage(): Promise<void> {
     panel.innerHTML = `<h2>${t("存储", "Storage")}</h2><p class="hint">${esc(errorMessage(e))}</p>`;
     return;
   }
+  if (!panel.isConnected) return;
   const other = Math.max(0, st.meetings_bytes - st.audio_bytes);
   const total = st.meetings_bytes + (st.models_bytes ?? 0);
   const pct = (n: number) => (total ? (n / total) * 100 : 0).toFixed(1);
@@ -711,7 +727,7 @@ async function panelStorage(): Promise<void> {
         ),
       );
       await refreshMeetings();
-      panelStorage();
+      if (panel.isConnected) panelStorage();
     } catch (e) {
       toast(errorMessage(e), true);
     }
@@ -760,7 +776,7 @@ async function panelStorage(): Promise<void> {
             ),
           );
           await refreshMeetings();
-          panelStorage();
+          if (panel.isConnected) panelStorage();
         } catch (e) {
           toast(errorMessage(e), true);
         }
@@ -845,17 +861,9 @@ function panelLang(x: Ctx): void {
 
 function panelLlm(x: Ctx): void {
   const c = x.c;
-  const presets: Preset[] = [
-    ...x.local.map((p) => ({
-      id: p.id,
-      name: p.name,
-      base_url: p.base_url,
-      local: p,
-    })),
-    ...remotePresets(),
-  ];
-  const norm = (u: string) =>
-    u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
+  const panel = $("#sPanel");
+  const presets = remotePresets();
+  const norm = (u: string) => u.trim().replace(/\/+$/, "").replace("localhost", "127.0.0.1");
   const baseInput = () => $<HTMLInputElement>("#sBase");
   const presetOf = () =>
     ["codex", "claude-cli"].includes(getApi())
@@ -875,14 +883,14 @@ function panelLlm(x: Ctx): void {
         `Saved${c.api_key_hint !== "已设置" && c.api_key_hint !== "Set" ? ` (${esc(c.api_key_hint)})` : ""} — leave empty to keep it`,
       )
     : t("本地 Ollama 不需要", "Not needed for local Ollama");
-  $("#sPanel").innerHTML = `
+  panel.innerHTML = `
     <h2>${t("大模型", "LLM")}</h2>
     <p class="hint">${t(
       "用来把转写整理成纪要。支持 OpenAI 兼容接口和 Anthropic（Claude）接口。本机的 Magpie、CC Switch 中转打开后可以直接选；选本地 Ollama 则全程不出本机。",
       "Turns the transcript into minutes. Works with OpenAI-compatible and Anthropic (Claude) APIs. Local relays (Magpie, CC Switch) are detected automatically; pick local Ollama to keep everything on this Mac.",
     )}</p>
     <div class="s-grid">
-      <div class="prov-grid" id="sPreset">${presets.map((p) => `<button data-id="${p.id}" title="${esc(p.name)}">${dot(p)}<span>${esc(p.name)}</span></button>`).join("")}</div>
+      <div class="prov-grid" id="sPreset"></div>
       <div class="field"><label id="sProtocolLabel">${t("接口协议", "API protocol")}</label>
         ${segChoice(
           "sApi",
@@ -920,37 +928,30 @@ function panelLlm(x: Ctx): void {
 
   const model = $<HTMLInputElement>("#sModel");
   const key = $<HTMLInputElement>("#sKey");
+  const presetGrid = $("#sPreset", panel);
+  const modelCount = $("#sModelCount", panel);
+  const testMsg = $("#sTestMsg", panel);
   const getApi = bindSeg("sApi");
-  const setApi = (a: string) =>
-    $$<HTMLButtonElement>("#sApi button").forEach((b) =>
-      b.classList.toggle("on", b.dataset.v === a),
-    );
+  const setApi = (a: string) => $$<HTMLButtonElement>("#sApi button").forEach((b) => b.classList.toggle("on", b.dataset.v === a));
   let lastCli = c.api === "claude-cli" ? "claude-cli" : "codex";
   const markPreset = () => {
     const codex = ["codex", "claude-cli"].includes(getApi());
     if (codex) lastCli = getApi();
-    $("#sProtocolLabel").textContent = codex
-      ? t("命令行工具", "CLI provider")
-      : t("接口协议", "API protocol");
-    $$<HTMLButtonElement>("#sApi button").forEach(
-      (b) =>
-        (b.hidden =
-          ["codex", "claude-cli"].includes(b.dataset.v ?? "") !== codex),
-    );
-    $$<HTMLButtonElement>("#sPreset button").forEach((b) =>
-      b.classList.toggle("on", b.dataset.id === presetOf()),
-    );
+    $("#sProtocolLabel", panel).textContent = codex ? t("命令行工具", "CLI provider") : t("接口协议", "API protocol");
+    $$<HTMLButtonElement>("#sApi button", panel).forEach((b) => (b.hidden = ["codex", "claude-cli"].includes(b.dataset.v ?? "") !== codex));
+    $$<HTMLButtonElement>("button", presetGrid).forEach((b) => b.classList.toggle("on", b.dataset.id === presetOf()));
     baseInput().closest<HTMLElement>(".field")!.hidden = codex;
     key.closest<HTMLElement>(".field")!.hidden = codex;
-    $("#sFetch").hidden = codex;
+    $("#sFetch", panel).hidden = codex;
     model.placeholder = codex
-      ? t(
-          "留空使用所选 CLI 的默认模型",
-          "Leave blank for the selected CLI’s default model",
-        )
+      ? t("留空使用所选 CLI 的默认模型", "Leave blank for the selected CLI’s default model")
       : t("输入或选择模型", "Enter or select a model");
   };
-  markPreset();
+  const renderPresets = () => {
+    presetGrid.innerHTML = presets.map((p) => `<button data-id="${p.id}" title="${esc(p.name)}">${dot(p)}<span>${esc(p.name)}</span></button>`).join("");
+    markPreset();
+  };
+  renderPresets();
 
   let modelList: string[] = [];
   let recommended = "";
@@ -958,9 +959,7 @@ function panelLlm(x: Ctx): void {
   const setModels = (models: string[], rec = "") => {
     modelList = models;
     recommended = rec;
-    $("#sModelCount").textContent = models.length
-      ? t(`（可选 ${models.length} 个）`, `(${models.length} available)`)
-      : "";
+    modelCount.textContent = models.length ? t(`（可选 ${models.length} 个）`, `(${models.length} available)`) : "";
     refreshPicker();
   };
   refreshPicker = bindModelPicker(
@@ -968,9 +967,8 @@ function panelLlm(x: Ctx): void {
     () => recommended,
   );
   const msg = (text: string, cls = "") => {
-    const el = $("#sTestMsg");
-    el.className = "test-msg " + cls;
-    el.textContent = text;
+    testMsg.className = "test-msg " + cls;
+    testMsg.textContent = text;
   };
   /** 拉模型列表；manual 为 true 时（点了按钮）把结果告诉用户 */
   const fetchModels = async (manual = false) => {
@@ -981,17 +979,10 @@ function panelLlm(x: Ctx): void {
     }
     if (manual) msg(t("正在获取模型列表…", "Fetching models…"));
     try {
-      const r = await api<{ ok: boolean; models: string[] }>(
-        "/api/llm/models",
-        {
-          json: {
-            base_url: baseInput().value.trim(),
-            model: "",
-            api_key: key.value.trim() || null,
-            api: getApi(),
-          },
-        },
-      );
+      const r = await api<{ ok: boolean; models: string[] }>("/api/llm/models", {
+        json: { base_url: baseInput().value.trim(), model: "", api_key: key.value.trim() || null, api: getApi() },
+      });
+      if (!panel.isConnected) return;
       setModels(r.models);
       if (manual)
         msg(
@@ -1012,6 +1003,7 @@ function panelLlm(x: Ctx): void {
           r.ok ? "ok" : "bad",
         );
     } catch (e) {
+      if (!panel.isConnected) return;
       setModels([]);
       if (manual) msg(errorMessage(e), "bad");
     }
@@ -1020,84 +1012,66 @@ function panelLlm(x: Ctx): void {
     e.preventDefault();
     fetchModels(true);
   };
-  const current = presets.find((p) => p.id === presetOf());
-  if (current?.local)
-    setModels(current.local.models, current.local.recommended);
-  else if (c.base_url) fetchModels(); // 打开设置页时就拉一次模型列表
-
-  $$<HTMLButtonElement>("#sPreset button").forEach(
-    (b) =>
-      (b.onclick = () => {
-        const p = presets.find((x) => x.id === b.dataset.id);
-        if (!p) return;
-        msg("");
-        if (p.id === "cli") {
-          setApi(lastCli);
-          baseInput().value = "";
-          model.value = "";
-          key.value = "";
-          setModels([]);
-          markPreset();
-          msg(
-            t(
-              "使用所选 CLI 的已有登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。",
-              "Uses the selected CLI’s existing login. No URL or API key required. Model is optional; Test checks CLI availability.",
-            ),
-          );
-          return;
-        }
-        if (!p.base_url) {
-          setApi("openai");
-          // 自定义：清空，让用户填自己的地址；哪个预设高亮是按地址判断的，不清空就会跳回原来那个
-          baseInput().value = "";
-          model.value = "";
-          key.value = "";
-          setModels([]);
-          markPreset();
-          baseInput().focus();
-          msg(
-            t(
-              "填接口地址（OpenAI 兼容的一般以 /v1 结尾）、选接口协议，再点「获取模型列表」",
-              "Enter the base URL (OpenAI-compatible ones usually end in /v1), choose the protocol, then click Fetch models",
-            ),
-          );
-          return;
-        }
-        baseInput().value = p.base_url;
-        setApi(p.api ?? "openai");
-        if (p.local) {
-          const lp = p.local;
-          setModels(lp.models, lp.recommended);
-          key.value = lp.api_key; // 本机中转的 key 是固定的，直接填上
-          if (!lp.models.includes(model.value)) {
-            model.value =
-              (lp.recommended &&
-                lp.models.includes(lp.recommended) &&
-                lp.recommended) ||
-              lp.models[0] ||
-              "";
-          }
-          if (!lp.running) msg(lp.hint, "bad");
-          else if (lp.recommended && model.value === lp.recommended)
-            msg(
-              t(
-                `已选推荐模型 ${lp.recommended}：实测 76 分钟的会 51 秒出纪要`,
-                `Recommended model selected: ${lp.recommended} (a 76-minute meeting took 51 s)`,
-              ),
-              "ok",
-            );
-        } else {
-          setModels([]);
-          key.value = "";
-          model.value = p.model ?? "";
-          if (!c.api_key_set)
-            msg(
-              t("需要填写这家服务的 API Key", "This provider needs an API key"),
-            );
-        }
-        markPreset();
-      }),
-  );
+  let presetEdited = false;
+  localProviders ??= api<LocalProvider[]>("/api/llm/providers").catch(() => []);
+  void localProviders.then((providers) => {
+    if (!panel.isConnected) return;
+    if (providers.length) {
+      presets.unshift(...providers.map((p) => ({ id: p.id, name: p.name, base_url: p.base_url, local: p })));
+      renderPresets();
+    }
+    if (presetEdited || baseInput().value !== c.base_url || key.value) return;
+    const current = presets.find((p) => p.id === presetOf());
+    if (current?.local) setModels(current.local.models, current.local.recommended);
+    else if (c.base_url) void fetchModels();
+  });
+  presetGrid.onclick = (e) => {
+    const id = (e.target as Element).closest<HTMLElement>("[data-id]")?.dataset.id;
+    const p = presets.find((x) => x.id === id);
+    if (!p) return;
+    presetEdited = true;
+    msg("");
+    if (p.id === "cli") {
+      setApi(lastCli);
+      baseInput().value = "";
+      model.value = "";
+      key.value = "";
+      setModels([]);
+      markPreset();
+      msg(t("使用所选 CLI 的已有登录，无需接口地址或 API Key。模型可留空；测试检查 CLI 是否可用。", "Uses the selected CLI’s existing login. No URL or API key required. Model is optional; Test checks CLI availability."));
+      return;
+    }
+    if (!p.base_url) {
+      setApi("openai");
+      // 自定义：清空，让用户填自己的地址；哪个预设高亮是按地址判断的，不清空就会跳回原来那个
+      baseInput().value = "";
+      model.value = "";
+      key.value = "";
+      setModels([]);
+      markPreset();
+      baseInput().focus();
+      msg(t("填接口地址（OpenAI 兼容的一般以 /v1 结尾）、选接口协议，再点「获取模型列表」", "Enter the base URL (OpenAI-compatible ones usually end in /v1), choose the protocol, then click Fetch models"));
+      return;
+    }
+    baseInput().value = p.base_url;
+    setApi(p.api ?? "openai");
+    if (p.local) {
+      const lp = p.local;
+      setModels(lp.models, lp.recommended);
+      key.value = lp.api_key; // 本机中转的 key 是固定的，直接填上
+      if (!lp.models.includes(model.value)) {
+        model.value = (lp.recommended && lp.models.includes(lp.recommended) && lp.recommended) || lp.models[0] || "";
+      }
+      if (!lp.running) msg(lp.hint, "bad");
+      else if (lp.recommended && model.value === lp.recommended) msg(t(`已选推荐模型 ${lp.recommended}：实测 76 分钟的会 51 秒出纪要`, `Recommended model selected: ${lp.recommended} (a 76-minute meeting took 51 s)`), "ok");
+    } else {
+      setModels([]);
+      key.value = "";
+      model.value = p.model ?? "";
+      if (!c.api_key_set) msg(t("需要填写这家服务的 API Key", "This provider needs an API key"));
+    }
+    markPreset();
+  };
   baseInput().oninput = markPreset;
   baseInput().onchange = () => fetchModels();
   key.onchange = () => fetchModels(); // 填了 Key 才拿得到模型列表的服务（OpenAI、Claude 等），填完自动拉一次

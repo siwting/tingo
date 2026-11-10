@@ -14,6 +14,7 @@ import { refreshMeetings } from "../sidebar";
 import { isBusy, jobOf, minutesProgress, progressOf, S, sectionLabels } from "../state";
 import { speakerName, t } from "../i18n";
 import { dismissJob } from "../tasks";
+import { markedIndexes } from "./recording";
 
 type SpeakerSuggestion = { index: number; name: string; evidence?: string };
 type SpeakerGuess = { started: number; elapsed?: number; suggestions?: SpeakerSuggestion[]; error?: string };
@@ -78,6 +79,8 @@ export function stopAudio(): void {
     audioEl = null;
   }
 }
+
+const MARK_FLAG = '<svg viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>';
 
 const backLink = () => `<a class="back" href="#/meetings">${ICON.back}${t("会议记录", "Meetings")}</a>`;
 
@@ -382,12 +385,16 @@ function drawPane(): void {
     if (d.minutes) bindCorrection(pane);
   } else {
     pane.className = "card turns";
-    pane.innerHTML = d.turns
+    // 录音中标记的重点：标记落在哪段说话期间就高亮哪段（和录音工作台同一规则）
+    const marks = d.marks ?? [];
+    const markedSet = markedIndexes(d.turns.map((tn) => tn.start_ms), marks);
+    const marked = (i: number) => markedSet.has(i);
+    pane.innerHTML = (marks.length ? `<div class="marks-note">${MARK_FLAG}${t(`录音时标记了 ${marks.length} 处重点`, `${marks.length} moments marked while recording`)}</div>` : "") + d.turns
       .map(
         (tn, i) => `
-      <div class="turn" data-i="${i}" data-ms="${tn.start_ms}">
+      <div class="turn ${marked(i) ? "marked" : ""}" data-i="${i}" data-ms="${tn.start_ms}">
         <span class="av" style="background:${color(tn.color)}">${esc(initial(tn.speaker))}</span>
-        <div><div class="who">${esc(speakerName(tn.speaker))}<button class="ts" data-ms="${tn.start_ms}">${esc(tn.ts)}</button></div><div class="text">${esc(tn.text)}</div></div>
+        <div><div class="who">${esc(speakerName(tn.speaker))}<button class="ts" data-ms="${tn.start_ms}">${esc(tn.ts)}</button>${marked(i) ? `<span class="turn-flag" title="${t("录音时标记的重点", "Marked while recording")}">${MARK_FLAG}</span>` : ""}</div><div class="text">${esc(tn.text)}</div></div>
       </div>`,
       )
       .join("");

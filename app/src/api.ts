@@ -58,6 +58,8 @@ export interface MeetingDetail extends MeetingSummary {
   speaker_list: SpeakerInfo[];
   audio: boolean;
   path: string;
+  /** 录音中标记的重点时刻（毫秒） */
+  marks?: number[];
 }
 
 export type JobState =
@@ -82,10 +84,13 @@ export interface Job {
   minutes?: string;
   stage?: string;
   sources?: string[];
+  /** 开始时间（Unix 秒） */
+  started_at?: number;
   elapsed?: number;
   model_loaded?: boolean;
   levels?: Record<string, number>;
-  live?: { start_ms: number; text: string }[];
+  /** 边录边转最近几句；speaker 是录音中的临时编号（结束后整场重新区分说话人） */
+  live?: { start_ms: number; speaker?: number | null; text: string }[];
   notice?: string;
   /** 推理模型已经思考了多少字 */
   thinking?: number;

@@ -297,6 +297,12 @@ impl Engine {
         Ok(self)
     }
 
+    /// 边录边转用的静音检测：持续喂音频，一句话说完（停顿约 0.3 秒）就能知道它在哪结束。
+    /// 和识别用的是同一个 Silero 模型和参数。
+    pub fn live_vad(&self) -> Option<VoiceActivityDetector> {
+        VoiceActivityDetector::create(&self.vad, 60.0)
+    }
+
     pub fn transcribe(&self, samples: &[f32], offset_ms: u64) -> Result<Vec<Segment>, String> {
         let _guard = self.lock.lock().unwrap();
         if self.kind.is_mlx() {
@@ -323,6 +329,9 @@ impl Engine {
             }).collect());
         }
         let rec = self.rec.as_ref().ok_or("Speech recognizer is not loaded")?;
+        // 偏轻的声音先放大，不然静音检测会把轻声说话整句当成安静
+        let leveled = crate::audio::agc(samples);
+        let samples = leveled.as_slice();
         let Some(vad) = VoiceActivityDetector::create(&self.vad, 120.0) else {
             return Err("Voice activity detector failed to load".into());
         };

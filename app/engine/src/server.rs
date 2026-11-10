@@ -96,6 +96,8 @@ struct Live {
     last_voice: f64,
     /// 没人说话多少分钟后自动结束（0 = 不自动结束），每次检查时按配置更新
     silence_min: u32,
+    /// 录音中标记的重点时刻（毫秒），结束时存进会议文件夹的 marks.json
+    marks: Vec<u64>,
 }
 
 pub struct AppState {
@@ -1005,6 +1007,7 @@ fn meeting_json(dir: &Path) -> Value {
         .into();
     data["audio"] = meetings::find_audio(dir).is_some().into();
     data["path"] = dir.to_string_lossy().into();
+    data["marks"] = json!(meetings::read_marks(dir));
     data["turns"] = json!([]);
     data["speaker_list"] = json!([]);
     if let Ok(tr) = Transcript::load(&dir.join(TRANSCRIPT_JSON)) {
@@ -1613,6 +1616,7 @@ async fn record_start(State(s): State<Shared>, Json(r): Json<RecordReq>) -> ApiR
         hotwords: r.hotwords,
         last_voice: 0.0,
         silence_min: s.config().auto_stop_silence_min,
+        marks: Vec::new(),
     });
     spawn_watcher(&s, job.id.clone(), dir, job.sources.clone());
     Ok(Json(job))
@@ -1672,6 +1676,46 @@ fn spawn_watcher(s: &Shared, id: String, dir: PathBuf, sources: Vec<String>) {
     });
 }
 
+#[derive(Deserialize)]
+struct LiveQuery {
+    #[serde(default)]
+    from: usize,
+}
+
+/// 录音中的全部实时转写，从第 `from` 句起（界面每次只取新增的），带上标记过的重点时刻
+async fn live_lines(State(s): State<Shared>, Query(q): Query<LiveQuery>) -> ApiResult<Json<Value>> {
+    let rec = s.recording.lock().unwrap();
+    let live = rec.as_ref().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, tr("没有正在进行的录音", "Nothing is being recorded").into()))?;
+    let (lines, total) = live.live.as_ref().map(|l| l.lines_from(q.from)).unwrap_or_default();
+    Ok(Json(json!({
+        "job": live.job,
+        "from": q.from.min(total),
+        "total": total,
+        "lines": lines.into_iter().map(|l| json!({"start_ms": l.start_ms, "speaker": l.speaker, "text": l.text})).collect::<Vec<_>>(),
+        "marks": live.marks,
+    })))
+}
+
+#[derive(Deserialize)]
+struct MarkReq {
+    /// 标记哪一刻（毫秒）；不给就是现在
+    ms: Option<u64>,
+}
+
+/// 标记重点（再标同一处就取消）：录音中顶栏按钮、⌘M，或点某一句
+async fn record_mark(State(s): State<Shared>, Json(r): Json<MarkReq>) -> ApiResult<Json<Value>> {
+    let mut rec = s.recording.lock().unwrap();
+    let live = rec.as_mut().ok_or_else(|| bad(tr("没有正在进行的录音", "Nothing is being recorded")))?;
+    let ms = r.ms.unwrap_or_else(|| (live.recorder.elapsed() * 1000.0) as u64);
+    if let Some(i) = live.marks.iter().position(|&m| m.abs_diff(ms) < 1500) {
+        live.marks.remove(i);
+    } else {
+        live.marks.push(ms);
+        live.marks.sort_unstable();
+    }
+    Ok(Json(json!({"marks": live.marks})))
+}
+
 async fn record_stop(State(s): State<Shared>) -> ApiResult<Json<Job>> {
     stop_recording(&s, None, None, None).map(Json)
 }
@@ -1699,6 +1743,11 @@ fn stop_recording(s: &Shared, only: Option<&str>, notice: Option<String>, keep_s
         }
     });
     let dir = s.root().join(&job.meeting);
+    if !live.marks.is_empty() {
+        if let Err(e) = meetings::write_marks(&dir, &live.marks) {
+            eprintln!("保存重点标记失败：{e}");
+        }
+    }
     spawn_job(s, &job.id, move |st, id| {
         live.recorder.stop();
         if let Some(keep) = keep_s {
@@ -1716,8 +1765,8 @@ fn stop_recording(s: &Shared, only: Option<&str>, notice: Option<String>, keep_s
         match result {
             Some(Ok((tr, t))) if !tr.sentences.is_empty() => {
                 eprintln!(
-                    "结束录音后转写：剩余 {:.1}s，{} 段，聚类 {:.2}s",
-                    t.tail_s, t.segments, t.cluster_s
+                    "结束录音后转写：剩余 {:.1}s，{} 段，聚类 {:.2}s；边录边转说完到出字平均 {:.1}s、最长 {:.1}s",
+                    t.tail_s, t.segments, t.cluster_s, t.live_lag_avg_s, t.live_lag_max_s
                 );
                 meetings::save_transcript(&tr, &dir).map_err(|e| e.to_string())?;
                 // 合成录音和生成纪要同时进行
@@ -1938,7 +1987,7 @@ fn job_json(s: &AppState, job: &Job) -> Value {
                 .map(|l| {
                     l.recent(8)
                         .into_iter()
-                        .map(|(t, x)| json!({"start_ms": t, "text": x}))
+                        .map(|l| json!({"start_ms": l.start_ms, "speaker": l.speaker, "text": l.text}))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -2250,6 +2299,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/obsidian/vaults", get(obsidian_vaults))
         .route("/api/record/start", post(record_start))
         .route("/api/record/stop", post(record_stop))
+        .route("/api/record/mark", post(record_mark))
+        .route("/api/live", get(live_lines))
         .route("/api/import", post(import_file))
         .route("/api/job", get(get_job))
         .route("/api/job/dismiss", post(dismiss))

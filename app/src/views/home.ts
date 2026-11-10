@@ -3,10 +3,11 @@
 
 import { t } from "../i18n";
 import { api, type Job } from "../api";
-import { $, $$, $maybe, errorMessage, esc, fmt, ICON, main, toast } from "../dom";
+import { $, $maybe, errorMessage, esc, ICON, main, toast } from "../dom";
 import { poll } from "../poll";
 import { isBusy, needsModels, S } from "../state";
 import { dismissJob, renderTasks } from "../tasks";
+import { isRecordingPage, leaveRecording, renderRecording, updateRecording } from "./recording";
 
 type Phase = "idle" | "recording" | "downloading" | "error";
 
@@ -15,6 +16,14 @@ const phaseOf = (j: Job): Phase =>
   j.state === "recording" ? "recording" : j.kind === "models" && isBusy(j) ? "downloading" : j.kind === "models" && j.state === "error" ? "error" : "idle";
 
 export function renderHome(): void {
+  // 录音中：整页换成录音工作台
+  if (phaseOf(S.job) === "recording") {
+    renderRecording(S.job);
+    bindStop();
+    updateRecording(S.job);
+    return;
+  }
+  leaveRecording();
   main().innerHTML = `
     <div class="page">
       <div class="hero-head">
@@ -42,58 +51,27 @@ export function renderHome(): void {
 }
 
 export function updateHome(job: Job, prev: Job, forceRender = false): void {
+  const phase = phaseOf(job);
+  if (phase === "recording") {
+    if (!isRecordingPage()) {
+      renderRecording(job);
+      bindStop();
+    }
+    return updateRecording(job);
+  }
+  if (isRecordingPage()) return renderHome();
   const glass = $maybe("#glass");
   if (!glass) return;
   const aurora = $("#aurora");
-  const phase = phaseOf(job);
-  aurora.classList.toggle("live", phase === "recording");
+  aurora.classList.toggle("live", false);
   if (forceRender || phase !== phaseOf(prev) || glass.dataset.phase !== phase) {
     glass.dataset.phase = phase;
     glass.innerHTML = VIEWS[phase](job);
     bindHome(phase);
   }
-  if (phase === "recording") updateRecording(job, aurora);
   if (phase === "downloading") updateDownloading(job);
 }
 
-function updateRecording(job: Job, aurora: HTMLElement): void {
-  $("#timer").textContent = fmt((job.elapsed ?? 0) * 1000);
-  let peak = 0;
-  for (const [k, v] of Object.entries(job.levels ?? {})) {
-    peak = Math.max(peak, v);
-    const bars = $$(`#meter-${k} i`);
-    const on = Math.round(v * bars.length);
-    bars.forEach((b, i) => {
-      b.classList.toggle("on", i < on);
-      b.classList.toggle("hot", i < on && i >= bars.length - 2);
-    });
-  }
-  aurora.style.setProperty("--lv", peak.toFixed(3));
-  const silentMin = Math.floor((job.silent_s ?? 0) / 60);
-  $("#recNote").textContent =
-    silentMin >= 1
-      ? job.auto_stop_s !== undefined
-        ? t(
-            `已经 ${silentMin} 分钟没人说话，${Math.max(1, Math.ceil(job.auto_stop_s / 60))} 分钟后自动结束录音`,
-            `No one has spoken for ${silentMin} min — stopping automatically in ${Math.max(1, Math.ceil(job.auto_stop_s / 60))} min`,
-          )
-        : t(`已经 ${silentMin} 分钟没人说话`, `No one has spoken for ${silentMin} min`)
-      : job.model_loaded
-    ? t("边录边转中，结束后几秒就出转写", "Transcribing as you record — the transcript is ready seconds after you stop")
-    : t("正在准备识别模型…", "Preparing the speech model…");
-  const lines = job.live ?? [];
-  const box = $("#liveLines");
-  const key = lines.map((l) => l.start_ms).join(",");
-  if (box.dataset.key !== key) {
-    box.dataset.key = key;
-    box.innerHTML = lines.length
-      ? lines.map((l) => `<div><span class="lt">${fmt(l.start_ms)}</span>${esc(l.text)}</div>`).join("")
-      : `<div class="lw">${t("说话内容会在这里实时出现（约十几秒一批）", "What people say will appear here live (in batches of ~15 seconds)")}</div>`;
-    box.scrollTop = box.scrollHeight;
-  }
-}
-
-const sourceName = (s: string) => (s === "system" ? t("系统声音", "System audio") : t("麦克风", "Microphone"));
 
 function downloadPanel(): string {
   const mb = S.env?.models_size_mb ?? 330;
@@ -122,22 +100,6 @@ function idleForm(): string {
     </div>`;
 }
 
-const recordingView = (job: Job) => `
-  <div class="live-head"><span class="live-dot"></span>${t("录音中", "Recording")} · ${esc((job.sources ?? []).map(sourceName).join(" + "))}</div>
-  <div class="timer" id="timer">00:00</div>
-  <div class="meters">
-    ${(job.sources ?? [])
-      .map((s) => `<div class="meter" id="meter-${s}"><span>${sourceName(s)}</span><div class="meter-bars">${"<i></i>".repeat(28)}</div></div>`)
-      .join("")}
-  </div>
-  <div class="live-lines" id="liveLines"></div>
-  <div class="glass-foot">
-    <span class="proc-note" style="margin:0" id="recNote"></span>
-    <span class="spacer"></span>
-    <span class="rec-label">${t("结束录音", "Stop")}</span>
-    <button class="rec-btn stop" id="stopBtn" title="${t("结束录音", "Stop recording")}"><span class="core"></span></button>
-  </div>`;
-
 const downloadingView = () => `
   <div class="live-head" style="color:var(--blue)"><span class="live-dot" style="background:var(--cyan)"></span>${t("下载识别模型", "Downloading the speech model")}</div>
   <div class="timer" id="dlText" style="font-size:22px;margin:12px 0 10px">0 MB</div>
@@ -162,7 +124,7 @@ const errorView = (job: Job) => `
 
 const VIEWS: Record<Phase, (job: Job) => string> = {
   idle: idleForm,
-  recording: recordingView,
+  recording: () => "", // 录音中整页换成录音工作台（recording.ts）
   downloading: downloadingView,
   error: errorView,
 };
@@ -198,8 +160,6 @@ function bindHome(phase: Phase): void {
       (e.currentTarget as HTMLElement).classList.toggle("on", S.form.mic);
     };
     $("#recBtn").onclick = startRecording;
-  } else if (phase === "recording") {
-    $("#stopBtn").onclick = stopRecording;
   } else if (phase === "error") {
     $("#againBtn").onclick = async () => {
       const id = S.job.id;
@@ -230,6 +190,10 @@ async function startRecording(): Promise<void> {
     toast(errorMessage(e), true);
     if (btn) btn.disabled = false;
   }
+}
+
+function bindStop(): void {
+  $("#stopBtn").onclick = stopRecording;
 }
 
 async function stopRecording(): Promise<void> {

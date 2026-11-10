@@ -3,6 +3,7 @@ import { $$, main } from "./dom";
 import { S } from "./state";
 import { renderDetail, stopAudio } from "./views/detail";
 import { renderHome } from "./views/home";
+import { leaveRecording } from "./views/recording";
 import { renderMeetings } from "./views/meetings";
 import { renderSettings } from "./views/settings";
 import { renderWelcome } from "./views/welcome";
@@ -10,6 +11,7 @@ import { renderWelcome } from "./views/welcome";
 export function route(): void {
   const h = decodeURIComponent(location.hash.slice(1) || "/");
   stopAudio();
+  leaveRecording();
   S.detail = null;
   if (S.env?.read_only) {
     const [id,query]=h.startsWith("/m/")?h.slice(3).split("?"): [undefined,undefined];
@@ -38,5 +40,6 @@ export function route(): void {
   }
   $$<HTMLAnchorElement>(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === nav));
   $$<HTMLAnchorElement>("#recentList a").forEach((a) => a.classList.toggle("active", h.split("?")[0] === `/m/${a.dataset.id}`));
-  main().scrollTop = 0;
+  if (nav === "settings") main().scrollTo({ top: 0, behavior: "instant" });
+  else main().scrollTop = 0;
 }

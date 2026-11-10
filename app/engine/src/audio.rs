@@ -287,9 +287,123 @@ pub fn find_cut(audio: &[f32], force: bool, min_s: f64, search_s: f64) -> Option
     (force || db(quiet) < db(loud) - 15.0).then_some(starts[best] + win / 2)
 }
 
+/// 自动增益：把偏轻的声音放大到正常说话的音量再做静音检测和识别。
+/// 录音离麦克风远、对方声音小时，整段只有 -45 dBFS 左右，Silero 会把大部分说话当成安静、整句漏掉
+/// （实测一场 114 秒的会只识别出 131 字，放大后 598 字）。
+/// 每 0.1 秒算一次音量，取前后各约 1 秒里的最大值决定增益（说话声决定增益，停顿处不会把底噪拉上来），
+/// 最多放大 `AGC_MAX_GAIN_DB`，增益平滑过渡，峰值限制在 0.98 以内。正常音量的录音基本不变。
+pub fn agc(audio: &[f32]) -> Vec<f32> {
+    const FRAME: usize = SR / 10;
+    const SPAN: usize = 10; // 前后各 10 帧（1 秒）
+    const TARGET_DB: f32 = -20.0;
+    if audio.is_empty() {
+        return Vec::new();
+    }
+    let rms_db: Vec<f32> = audio
+        .chunks(FRAME)
+        .map(|c| {
+            let e = c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32;
+            10.0 * (e + 1e-12).log10()
+        })
+        .collect();
+    let gains: Vec<f32> = (0..rms_db.len())
+        .map(|i| {
+            let lo = i.saturating_sub(SPAN);
+            let hi = (i + SPAN + 1).min(rms_db.len());
+            let loud = rms_db[lo..hi].iter().copied().fold(f32::MIN, f32::max);
+            10f32.powf((TARGET_DB - loud).clamp(0.0, AGC_MAX_GAIN_DB) / 20.0)
+        })
+        .collect();
+    audio
+        .iter()
+        .enumerate()
+        .map(|(n, &v)| {
+            // 相邻两帧的增益之间线性过渡，不会出现台阶
+            let pos = n as f32 / FRAME as f32 - 0.5;
+            let i = (pos.floor().max(0.0) as usize).min(gains.len() - 1);
+            let j = (i + 1).min(gains.len() - 1);
+            let t = (pos - i as f32).clamp(0.0, 1.0);
+            let g = gains[i] + (gains[j] - gains[i]) * t;
+            (v * g).clamp(-0.98, 0.98)
+        })
+        .collect()
+}
+
+/// 自动增益最多放大多少分贝：再大就会把纯底噪拉成"有人说话"
+pub const AGC_MAX_GAIN_DB: f32 = 24.0;
+
+/// 边录边转时每段最短、最长秒数：说完一句（遇到停顿）就切，一直没停顿最多攒 12 秒
+pub const LIVE_MIN_CHUNK_S: f64 = 2.5;
+pub const LIVE_MAX_CHUNK_S: f64 = 12.0;
+
+/// 边录边转的切点：从 `min_s` 起找第一个停顿（0.4 秒窗口比这段里的说话声低 15 dB，或本身接近无声），
+/// 说完一句就能马上识别；一直没有停顿、攒到 `max_s` 时退回 [`find_cut`] 在末尾几秒里强制切。
+/// 和 [`find_cut`] 不同，不会因为说完后一直安静（末尾全是静音、比不出高低）而一直等到最长。
+pub fn find_live_cut(audio: &[f32], min_s: f64, max_s: f64) -> Option<usize> {
+    let n = audio.len();
+    let min = (min_s * SR as f64) as usize;
+    let max = (max_s * SR as f64) as usize;
+    let win = (QUIET_WIN_S * SR as f64) as usize;
+    let hop = win / 4;
+    if n < min.max(win) {
+        return None;
+    }
+    let db = |s: usize| {
+        let e = audio[s..s + win].iter().map(|v| v * v).sum::<f32>() / win as f32;
+        10.0 * (e + 1e-12).log10()
+    };
+    let starts: Vec<usize> = (0..=n - win).step_by(hop).collect();
+    let levels: Vec<f32> = starts.iter().map(|&s| db(s)).collect();
+    let mut sorted = levels.clone();
+    sorted.sort_by(f32::total_cmp);
+    let loud = sorted[((sorted.len() - 1) as f32 * 0.9) as usize];
+    let quiet = |l: f32| l < loud - 15.0 || l < -50.0;
+    if let Some(i) = starts.iter().zip(&levels).position(|(&s, &l)| s + win / 2 >= min && quiet(l)) {
+        return Some(starts[i] + win / 2);
+    }
+    (n >= max).then(|| find_cut(&audio[..max.min(n)], true, max_s, 3.0)).flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agc_lifts_quiet_speech_and_leaves_normal_audio_alone() {
+        let db = |x: &[f32]| 10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + 1e-12).log10();
+        // -45 dBFS 左右的轻声说话：放大到接近正常音量
+        let quiet = tone(3.0, 0.008);
+        let up = agc(&quiet);
+        assert!(db(&up) - db(&quiet) > 18.0, "{} -> {}", db(&quiet), db(&up));
+        // 正常音量：不动
+        let normal = tone(3.0, 0.2);
+        assert!((db(&agc(&normal)) - db(&normal)).abs() < 0.5);
+        // 纯静音最多放大到上限，不会变成大声
+        let hiss: Vec<f32> = (0..SR * 2).map(|i| if i % 2 == 0 { 0.0005 } else { -0.0005 }).collect();
+        assert!(db(&agc(&hiss)) - db(&hiss) <= AGC_MAX_GAIN_DB + 0.1);
+        // 不削波
+        assert!(agc(&tone(1.0, 0.9)).iter().all(|v| v.abs() <= 0.98));
+    }
+
+    #[test]
+    fn live_cut_takes_the_first_pause_or_waits() {
+        // 说 3 秒、停 0.6 秒、再说：在停顿处切，不等攒满
+        let mut x = [tone(3.0, 0.3), silence(0.6), tone(2.0, 0.3)].concat();
+        let cut = find_live_cut(&x, 2.5, 12.0).unwrap();
+        assert!((3 * SR as usize..(3.6 * SR as f32) as usize).contains(&cut), "{cut}");
+        // 还没到最短长度：等
+        assert_eq!(find_live_cut(&x[..(2.0 * SR as f32) as usize], 2.5, 12.0), None);
+        // 说完后一直安静：马上切，不会一直等到最长
+        let done = [tone(3.0, 0.3), silence(4.0)].concat();
+        assert!(find_live_cut(&done, 2.5, 12.0).unwrap() < (3.6 * SR as f32) as usize);
+        // 整段没人说话：到最短长度就切掉
+        assert!(find_live_cut(&silence(3.0), 2.5, 12.0).is_some());
+        // 一直在说：没到最长不切，到了强制切
+        x = tone(8.0, 0.3);
+        assert_eq!(find_live_cut(&x, 2.5, 12.0), None);
+        let long = tone(13.0, 0.3);
+        assert!(find_live_cut(&long, 2.5, 12.0).unwrap() <= 12 * SR as usize);
+    }
 
     fn tone(secs: f32, amp: f32) -> Vec<f32> {
         (0..(secs * SR as f32) as usize)
